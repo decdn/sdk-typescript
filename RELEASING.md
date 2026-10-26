@@ -53,9 +53,12 @@ next patch version and `npm deprecate` on the broken one.
 
 ## The minimum gateway release
 
-The README names the oldest `decdn gateway` release the SDK works against in
-the browser and on a public gateway. Raise it in the same PR as any change
-that relies on newer gateway behaviour, and check it before every release: an
-SDK whose floor names an unreleased gateway does not ship. The first floor is
+The README and `package.json` (`decdn.gatewayFloor`) name the oldest
+`decdn gateway` release the SDK works against in the browser and on a public
+gateway. Raise both in the same PR as any change that relies on newer gateway
+behaviour, and check them before every release: an SDK whose floor names an
+unreleased gateway does not ship. The `Release gateways` workflow runs the
+contract suite against the floor and the latest decdn release; it is green
+before a release. The first floor is
 the release that carries
 [cross-origin reads](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md#cross-origin-reads).

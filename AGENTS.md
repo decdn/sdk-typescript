@@ -26,15 +26,21 @@ pnpm test:browser    # Chromium smoke (needs playwright's chromium-headless-shel
 
 - **The fake gateway mirrors the real one.** `test/fake-gateway.ts` must
   match the gateway's statuses, headers and JSON shapes the SDK reads. The
-  contract suite in `test/contract` also runs against the real binary in
-  decdn's `anvil-e2e-sdk` job, which checks out this repo's `main`; a change
-  here the gateway does not do turns decdn's CI red. See CONTRIBUTING.md.
+  contract suite in `test/contract` also runs against the real binary: in
+  decdn's `SDK contract` workflow, at the commit decdn pins, and here against
+  released gateways. A change the gateway does not do fails both. See
+  CONTRIBUTING.md.
 - **Verification is the product.** A whole body named by hash is hashed as
   it streams (`src/verify.ts`); only a window the caller asked for, or a page
   the gateway renders, goes unhashed. Never downgrade `verified` on a
   gateway's say-so.
 - **u64 values are `bigint`.** Namespaces, seq, caps and expiries exceed
   2^53; JSON from the gateway goes through `parseWithBigInts` (`src/http.ts`).
+- **Released gateways.** The contract suite also runs against the floor in
+  `package.json` (`decdn.gatewayFloor`) and the latest decdn release
+  (`scripts/decdn-contract.sh`, `.github/workflows/gateway-releases.yml`).
+  The fixture file decdn's harness writes is a contract: a suite change must
+  still read what the floor's harness writes, or raise the floor.
 - **Pinned vectors.** `test/fixtures/{capability,pointer}.json` are pinned by
   Rust tests in decdn; change both sides together.
 - **Present tense.** Comments and docs describe what the code does, not its
