@@ -17,3 +17,12 @@ and the package follows [Semantic Versioning](https://semver.org/).
   drives the loopback delegate and capability API, and signs namespace
   pointers (EIP-712, raw key or any typed-data signer). Browser and public
   use need the gateway release that answers every origin.
+
+### Fixed
+
+- **`@decdn/client/node` has types under `moduleResolution: "bundler"`.**
+  TypeScript's `bundler` resolution, the default in Vite and Next.js
+  templates, does not set the `node` condition, so the import had no
+  declarations without `customConditions: ["node"]`. A type-only fallback
+  now follows the `node` branch. The entry point stays Node-only at runtime:
+  a browser bundle that imports it still fails to build.

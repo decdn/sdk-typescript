@@ -4,8 +4,10 @@
 # Run after `pnpm build`.
 #
 # `.` must resolve under every resolution attw knows. `./node` is exported
-# only under the `node` condition, which node10 and TypeScript's `bundler`
-# resolution do not set, so it must resolve under node16 only.
+# under the `node` condition, with a type-only fallback for TypeScript's
+# `bundler` resolution, which does not set `node`. It must resolve under
+# node16 (ESM and CJS) and bundler; only node10, which does not read
+# `exports`, is ignored.
 #
 # Usage:  scripts/check-package.sh
 set -euo pipefail
@@ -21,13 +23,13 @@ pnpm exec publint --strict
 echo "==> attw: ."
 pnpm exec attw --pack . --exclude-entrypoints ./node
 
-echo "==> attw: ./node (node16)"
+echo "==> attw: ./node (node16, bundler)"
 # attw exits non-zero on any problem; the JSON is what decides. Output that is
 # not attw's JSON fails jq, and so the script.
 problems=$({ pnpm exec attw --pack . --entrypoints ./node --format json || true; } |
-  jq -c '[.analysis.problems[] | select(.resolutionKind | IN("node10", "bundler") | not)]')
+  jq -c '[.analysis.problems[] | select(.resolutionKind != "node10")]')
 if [[ "$problems" != "[]" ]]; then
-  pnpm exec attw --pack . --entrypoints ./node --profile node16 || true
-  die "./node does not resolve under node16: $problems"
+  pnpm exec attw --pack . --entrypoints ./node || true
+  die "./node does not resolve under node16 and bundler: $problems"
 fi
-echo "./node resolves under node16 (ESM and CJS)"
+echo "./node resolves under node16 (ESM and CJS) and bundler"

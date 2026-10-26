@@ -53,7 +53,8 @@
           "types": "./dist/node.d.cts",
           "default": "./dist/node.cjs"
         }
-      }
+      },
+      "types": "./dist/node.d.ts"
     },
     "./package.json": "./package.json"
   },
