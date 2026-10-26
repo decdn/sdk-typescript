@@ -22,6 +22,11 @@ pnpm test:browser    # Chromium smoke run against the fake gateway
 Commits and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/).
 A user-visible change adds a `CHANGELOG.md` entry by hand.
 
+`pnpm install` also installs git hooks (husky): `pre-commit` runs eslint and
+prettier on the staged files (lint-staged), and `commit-msg` checks the
+message with commitlint against the types the PR title check allows
+(`commitlint.config.mjs`). `HUSKY=0` skips them.
+
 ## CI
 
 `CI success` gates a merge. It needs every job in `.github/workflows/ci.yml`:

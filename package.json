@@ -63,7 +63,17 @@
     "format": "prettier --write .",
     "test": "vitest run --project unit --project contract",
     "test:contract": "vitest run --project contract",
-    "test:browser": "vitest run --project browser"
+    "test:browser": "vitest run --project browser",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,mts,cts,js,mjs,cjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yaml,yml}": [
+      "prettier --write"
+    ]
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",
@@ -76,12 +86,16 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
     "@eslint/js": "^9.39.0",
     "@types/node": "^24",
     "@vitest/browser-playwright": "^5.0.5",
     "esbuild": "^0.28.2",
     "eslint": "^9.39.0",
     "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
     "playwright": "^1.64.1",
     "prettier": "^3.9.4",
     "publint": "^0.3.25",

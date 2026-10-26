@@ -46,6 +46,6 @@ pnpm test:browser    # Chromium smoke (needs playwright's chromium-headless-shel
   Rust tests in decdn; change both sides together.
 - **Present tense.** Comments and docs describe what the code does, not its
   history.
-- **Conventional commits**, a hand-written `CHANGELOG.md` entry per
-  user-visible PR, releases per RELEASING.md (signed `v*` tags, local
-  publish, no npm token in CI).
+- **Conventional commits** (commitlint checks them in a `commit-msg` hook),
+  a hand-written `CHANGELOG.md` entry per user-visible PR, releases per
+  RELEASING.md (signed `v*` tags, local publish, no npm token in CI).
