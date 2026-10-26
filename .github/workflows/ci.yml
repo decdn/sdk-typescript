@@ -103,8 +103,11 @@ jobs:
           persist-credentials: false
       - uses: taiki-e/install-action@v2.87.29
         with:
-          tool: actionlint,zizmor,shellcheck
-      - run: actionlint
+          tool: zizmor,shellcheck
+      # install-action has no actionlint; its image also shellchecks `run:`.
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
       # The token turns on zizmor's online audits (known-vulnerable actions).
       # Its policy for action refs is in .github/zizmor.yml.
       - run: zizmor --format=github .github/workflows
