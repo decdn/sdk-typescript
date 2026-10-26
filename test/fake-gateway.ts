@@ -4,6 +4,12 @@
 // `handle` answers a web `Request`; `fetch` is a drop-in `fetch` for the SDK.
 // The contract suite (test/contract) runs the same tests against this fake
 // and against a real gateway, so a drift between the two fails CI.
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import type { AddressInfo } from "node:net";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
   base32ToHash,
@@ -147,7 +153,8 @@ function checksum(address: string): string {
 
 export class FakeGateway {
   readonly mode: FakeMode;
-  readonly host: string;
+  /** `host[:port]` of the bare host; settable so a listener can name the port it got. */
+  host: string;
   readonly token: string;
   readonly blobs = new Map<string, Uint8Array>();
   /** Hashes whose pull the pool cannot pay: 503. */
@@ -239,6 +246,70 @@ export class FakeGateway {
     }
     return response;
   };
+
+  /** Serve this fake over HTTP on a free loopback port: `address` is `127.0.0.1:<port>`. */
+  async listen(): Promise<{ address: string; close(): Promise<void> }> {
+    const server = createServer((req, res) => {
+      void this.serveHttp(req, res);
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const { port } = server.address() as AddressInfo;
+    return {
+      address: `127.0.0.1:${port}`,
+      close: () =>
+        new Promise<void>((resolve) => {
+          server.closeAllConnections();
+          server.close(() => resolve());
+        }),
+    };
+  }
+
+  private async serveHttp(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (typeof value === "string") headers.set(key, value);
+      else if (Array.isArray(value))
+        for (const v of value) headers.append(key, v);
+    }
+    const method = req.method ?? "GET";
+    const init: RequestInit = { method, headers };
+    if (method !== "GET" && method !== "HEAD" && chunks.length > 0)
+      init.body = Buffer.concat(chunks);
+    const response = await this.handle(
+      new Request(
+        `http://${req.headers.host ?? this.host}${req.url ?? "/"}`,
+        init,
+      ),
+    );
+    const out: Record<string, string> = {};
+    response.headers.forEach((value, key) => {
+      out[key] = value;
+    });
+    res.writeHead(response.status, out);
+    if (response.body === null || method === "HEAD") {
+      res.end();
+      return;
+    }
+    const reader = response.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      res.end();
+    } catch {
+      // The gateway aborts a body whose pull fails after its first byte.
+      res.destroy();
+    }
+  }
 
   async handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
