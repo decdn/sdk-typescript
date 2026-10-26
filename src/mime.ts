@@ -1,7 +1,8 @@
 // What the gateway does with an entry by the extension of its name: whether a
-// site rewrites it as it streams (crates/cli/src/commands/gateway/rewrite.rs
-// rewrites the types mime_guess maps these extensions to), and the type a
-// site serves it as, for the common web types.
+// site rewrites it as it streams (the gateway rewrites the types mime_guess
+// maps these extensions to:
+// https://github.com/decdn/decdn/blob/main/crates/cli/src/commands/gateway/rewrite.rs),
+// and the type a site serves it as, for the common web types.
 
 /** Extensions a site serves as `text/html` or `text/css`, rewritten as they stream. */
 const REWRITTEN = /\.(html?|hxt|shtml|css)$/i;

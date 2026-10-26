@@ -1,5 +1,5 @@
-// Bundle manifests, as `BundleManifest::parse` in crates/client/src/bundle.rs
-// reads them: `{"version":1,"entries":[{"path","hash","size"?,"chunks"?}]}`,
+// Bundle manifests, as `BundleManifest::parse` reads them
+// (https://github.com/decdn/decdn/blob/main/crates/client/src/bundle.rs): `{"version":1,"entries":[{"path","hash","size"?,"chunks"?}]}`,
 // the version checked before any hash, every hash 64 hex characters after an
 // optional `b3:` or `0x`.
 import { DecdnError } from "./errors.js";

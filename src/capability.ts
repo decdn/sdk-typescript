@@ -1,5 +1,5 @@
-// `dcap1:` capability tokens, as crates/incentive/src/capability_grant.rs
-// writes them: `dcap1:` + base64url (no padding) of the postcard encoding of
+// `dcap1:` capability tokens, as the Rust encoder writes them
+// (https://github.com/decdn/decdn/blob/main/crates/incentive/src/capability_grant.rs): `dcap1:` + base64url (no padding) of the postcard encoding of
 // `{pool_id: [u8;32], signer: [u8;20], spending_cap: u64, expiry: u64,
 // owner_signature: Vec<u8>}`. Postcard writes a byte string as a varint
 // length and the bytes, and an integer as a LEB128 varint.

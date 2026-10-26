@@ -1,5 +1,6 @@
-// Namespace pointers (crates/cli/src/commands/gateway/pointer.rs): an
-// owner-signed EIP-712 record
+// Namespace pointers
+// (https://github.com/decdn/decdn/blob/main/crates/cli/src/commands/gateway/pointer.rs):
+// an owner-signed EIP-712 record
 //
 //   Pointer(uint256 namespaceId,bytes32 root,uint64 seq)
 //

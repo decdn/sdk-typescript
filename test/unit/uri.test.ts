@@ -1,5 +1,6 @@
-// Cases ported from crates/client/src/uri/tests.rs: the SDK accepts and
-// rejects exactly what the Rust `decdn:` URI grammar does.
+// Cases ported from the Rust client's URI tests
+// (https://github.com/decdn/decdn/blob/main/crates/client/src/uri/tests.rs):
+// the SDK accepts and rejects exactly what the Rust `decdn:` grammar does.
 import { describe, expect, it } from "vitest";
 import {
   DecdnError,

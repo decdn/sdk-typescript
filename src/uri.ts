@@ -1,4 +1,5 @@
-// `decdn:` URIs, the grammar of crates/client/src/uri.rs:
+// `decdn:` URIs, the grammar of the Rust client
+// (https://github.com/decdn/decdn/blob/main/crates/client/src/uri.rs):
 //
 //   decdn:<hash>[/<path>][?ns=<id>]
 //

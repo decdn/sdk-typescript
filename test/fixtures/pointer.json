@@ -1,5 +1,5 @@
 {
-  "comment": "Pinned by crates/cli/src/commands/gateway/pointer/tests.rs a_fixed_pointer_signs_to_a_pinned_signature",
+  "comment": "Pinned by https://github.com/decdn/decdn/blob/main/crates/cli/src/commands/gateway/pointer/tests.rs a_fixed_pointer_signs_to_a_pinned_signature",
   "privateKey": "0x2222222222222222222222222222222222222222222222222222222222222222",
   "address": "0x1563915e194D8CfBA1943570603F7606A3115508",
   "chainId": 421614,

@@ -5,11 +5,10 @@
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/decdn/decdn.git",
-    "directory": "sdk/typescript"
+    "url": "git+https://github.com/decdn/sdk-typescript.git"
   },
-  "homepage": "https://github.com/decdn/decdn/tree/main/sdk/typescript#readme",
-  "bugs": "https://github.com/decdn/decdn/issues",
+  "homepage": "https://github.com/decdn/sdk-typescript#readme",
+  "bugs": "https://github.com/decdn/sdk-typescript/issues",
   "keywords": [
     "decdn",
     "cdn",

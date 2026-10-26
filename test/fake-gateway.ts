@@ -1,5 +1,6 @@
 // An in-process fake of `decdn gateway`'s HTTP contract
-// (crates/cli/src/commands/gateway.rs, adr/appendix-gateway.md): the same
+// (https://github.com/decdn/decdn/blob/main/crates/cli/src/commands/gateway.rs,
+// https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md): the same
 // hosts, statuses, headers and JSON bodies, over content held in memory.
 // `handle` answers a web `Request`; `fetch` is a drop-in `fetch` for the SDK.
 // The contract suite (test/contract) runs the same tests against this fake

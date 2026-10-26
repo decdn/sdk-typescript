@@ -191,6 +191,7 @@ pnpm build           # dist/: ESM, CJS and types
 
 `test/fake-gateway.ts` reproduces the gateway's HTTP contract. The contract
 suite in `test/contract` runs against it by default, and against a real
-gateway in `crates/e2e/tests/gateway_sdk.rs`, so the two cannot drift apart.
-Releases are cut from signed `sdk-v*` tags
-([RELEASING.md](https://github.com/decdn/decdn/blob/main/RELEASING.md#releasing-the-typescript-sdk)).
+gateway in decdn's CI
+([`gateway_sdk.rs`](https://github.com/decdn/decdn/blob/main/crates/e2e/tests/gateway_sdk.rs)),
+so the two cannot drift apart. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Releases are cut from signed `v*` tags ([RELEASING.md](RELEASING.md)).

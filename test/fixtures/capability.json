@@ -1,5 +1,5 @@
 {
-  "comment": "Pinned by crates/incentive/src/capability_grant/tests.rs a_fixed_grant_encodes_to_a_pinned_token",
+  "comment": "Pinned by https://github.com/decdn/decdn/blob/main/crates/incentive/src/capability_grant/tests.rs a_fixed_grant_encodes_to_a_pinned_token",
   "token": "dcap1:IBEiM0RVZneImQCqu8zd7v8AESIzRFVmd4iZqrvM3e7_FAAAAAAAAAAAAAAAAAAAAAAAAAChgK3iBIDm_okHQQABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj9A",
   "poolId": "0x11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff",
   "signer": "0x00000000000000000000000000000000000000a1",

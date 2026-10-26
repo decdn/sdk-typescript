@@ -1,5 +1,6 @@
 // The SDK against a public gateway: the fake by default, the real binary
-// when crates/e2e/tests/gateway_sdk.rs runs this file with DECDN_CONTRACT.
+// when decdn's contract run runs this file with DECDN_CONTRACT:
+// https://github.com/decdn/decdn/blob/main/crates/e2e/tests/gateway_sdk.rs
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   blake3Hex,

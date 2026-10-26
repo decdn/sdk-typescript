@@ -1,6 +1,8 @@
 // What the contract suite runs against. With `DECDN_CONTRACT` set to a JSON
-// file (written by crates/e2e/tests/gateway_sdk.rs), a real `decdn gateway`
-// serving the content the file describes; without it, the fake gateway over
+// file, written by decdn's
+// https://github.com/decdn/decdn/blob/main/crates/e2e/tests/gateway_sdk.rs,
+// a real `decdn gateway` serving the content the file describes; without it,
+// the fake gateway over
 // HTTP, serving the same shapes. Every request goes through `hostFetch` to
 // the listener, with the URL's host as `Host`.
 import { readFileSync } from "node:fs";

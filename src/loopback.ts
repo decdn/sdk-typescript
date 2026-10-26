@@ -1,4 +1,5 @@
-// The loopback gateway's API (crates/cli/src/commands/gateway.rs):
+// The loopback gateway's API
+// (https://github.com/decdn/decdn/blob/main/crates/cli/src/commands/gateway.rs):
 // `GET /_delegate` mints a delegate key, `PUT /_capability` registers a
 // `dcap1:` capability issued to it for a scope, `GET /_capability` lists the
 // registered ones (token only). A page calls the first two cross-origin; the

@@ -1,6 +1,7 @@
 // Site labels: a bundle's manifest hash as RFC 4648 base32, lowercase and
 // unpadded (52 characters, inside the 63-character DNS label limit), as the
-// gateway writes them (crates/cli/src/commands/gateway/site.rs).
+// gateway writes them
+// (https://github.com/decdn/decdn/blob/main/crates/cli/src/commands/gateway/site.rs).
 import { DecdnError } from "./errors.js";
 import { fromHex, isHash, toHex } from "./hex.js";
 

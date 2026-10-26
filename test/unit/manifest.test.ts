@@ -1,5 +1,5 @@
-// Cases ported from crates/client/src/bundle/engine/tests.rs
-// (`parse_manifest_*`): the SDK accepts the manifests `BundleManifest::parse`
+// Cases ported from the Rust `parse_manifest_*` tests
+// (https://github.com/decdn/decdn/blob/main/crates/client/src/bundle/engine/tests.rs): the SDK accepts the manifests `BundleManifest::parse`
 // accepts and refuses the rest.
 import { describe, expect, it } from "vitest";
 import { blake3Hex, DecdnError, parseManifest } from "../../src/index.js";
