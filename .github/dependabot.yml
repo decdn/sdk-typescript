@@ -4,10 +4,60 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    # "chore(deps): ..." / "chore(deps-dev): ...", so the titles pass the
+    # `PR title` check instead of depending on Dependabot's inference.
+    commit-message:
+      prefix: chore
+      include: scope
+    # Hold new releases for a week before proposing them, so a compromised npm
+    # publish has time to be caught and yanked. Security updates bypass this.
+    cooldown:
+      default-days: 7
     groups:
-      dev-dependencies:
+      # Coupled sets come first so they claim their packages before the
+      # catch-alls below. They omit `update-types` so a major bump moves the
+      # whole set in one PR instead of splitting into mismatched ones.
+      eslint:
+        patterns:
+          - "eslint"
+          - "@eslint/*"
+          - "typescript-eslint"
+          - "eslint-config-prettier"
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+          - "playwright"
+      noble:
+        patterns:
+          - "@noble/*"
+      production-dependencies:
+        dependency-type: production
+        update-types: ["minor", "patch"]
+      development-dependencies:
         dependency-type: development
+        update-types: ["minor", "patch"]
+    ignore:
+      # typescript-eslint peers `typescript <6.1.0`. Unblock when it widens.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # Tracks a Node line the CI matrix tests, not the latest Node major; bump
+      # it by hand together with the matrix.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # Same rationale as the npm ecosystem above.
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]

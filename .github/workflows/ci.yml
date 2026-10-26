@@ -10,14 +10,16 @@ on:
 permissions:
   contents: read
 
+# A re-pushed PR supersedes its own run; a push to main is never cancelled.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Lint, unit, script and contract tests (against the fake gateway), and the
-  # build. Node 20 is the floor `engines` names. The real-gateway contract run
-  # is decdn's `anvil-e2e-sdk` job, which checks out this repo's `main`.
+  # Lint, unit, script and contract tests (against the fake gateway), the
+  # build, and both entry points loaded by package name. 20.19 is the floor
+  # `engines` names. The real-gateway contract runs are decdn's `SDK contract`
+  # workflow and this repo's `Release gateways` workflow.
   test:
     name: test (node ${{ matrix.node }})
     runs-on: ubuntu-latest
@@ -25,9 +27,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["20", "24"]
+        node: ["20.19", "22", "24", "26"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6.1.0
       - uses: actions/setup-node@v7.1.0
         with:
@@ -37,18 +41,87 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
-      - name: Browser smoke (Chromium)
-        if: matrix.node == '24'
+      # From the repo root, `@decdn/client` resolves to this package through
+      # its own `exports`, as it does for a consumer.
+      - name: Load the built entry points
         run: |
-          pnpm exec playwright install --with-deps chromium-headless-shell
-          pnpm test:browser
+          node -e 'require("@decdn/client"); require("@decdn/client/node")'
+          node --input-type=module -e 'await import("@decdn/client"); await import("@decdn/client/node")'
+
+  # The Chromium smoke. Only the headless shell is installed, without
+  # `--with-deps`: the runner image ships Google Chrome and the libraries it
+  # needs, and apt-installing Playwright's fonts and xvfb can take minutes.
+  browser:
+    name: browser (chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - id: playwright
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - run: pnpm exec playwright install chromium-headless-shell
+      - run: pnpm test:browser
+
+  # The package as npm would ship it: publint and arethetypeswrong.
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: scripts/check-package.sh
+
+  # The workflows and the shell scripts.
+  lint-ci:
+    name: lint (workflows, scripts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@v2.87.29
+        with:
+          tool: zizmor,shellcheck
+      # install-action has no actionlint; its image also shellchecks `run:`.
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+      # The token turns on zizmor's online audits (known-vulnerable actions).
+      # Its policy for action refs is in .github/zizmor.yml.
+      - run: zizmor --format=github .github/workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: shellcheck scripts/*.sh
 
   # The single required check.
   ci-success:
     name: CI success
     if: always()
-    needs: [test]
+    needs: [test, browser, package, lint-ci]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: re-actors/alls-green@release/v1
         with:

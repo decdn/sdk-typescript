@@ -22,6 +22,21 @@ pnpm test:browser    # Chromium smoke run against the fake gateway
 Commits and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/).
 A user-visible change adds a `CHANGELOG.md` entry by hand.
 
+## CI
+
+`CI success` gates a merge. It needs every job in `.github/workflows/ci.yml`:
+
+| Job       | What it runs                                                                                           | Locally                                                             |
+| --------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `test`    | lint, tests and build on Node 20.19 (the `engines` floor), 22, 24 and 26, then loads both entry points | `pnpm lint && pnpm test && pnpm build`                              |
+| `browser` | the Chromium smoke                                                                                     | `pnpm test:browser`                                                 |
+| `package` | publint and arethetypeswrong on the packed package                                                     | `pnpm build && scripts/check-package.sh`                            |
+| `lint-ci` | actionlint, zizmor (policy in `.github/zizmor.yml`) and shellcheck                                     | `actionlint && zizmor .github/workflows && shellcheck scripts/*.sh` |
+
+Separate workflows check the PR title (`PR title`), run CodeQL on the
+TypeScript and the workflows (`CodeQL`), and run the contract suite against
+released gateways (`Release gateways`, below).
+
 ## The fake gateway and the contract run
 
 `test/fake-gateway.ts` reproduces the gateway's statuses, headers and JSON
