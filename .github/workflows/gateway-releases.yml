@@ -1,0 +1,130 @@
+name: Release gateways
+
+# The contract suite against released decdn gateways: the floor the README and
+# `package.json` (`decdn.gatewayFloor`) promise, and the latest release, each
+# through decdn's own harness at that tag with the release's signed binaries
+# (scripts/decdn-contract.sh). decdn's `SDK contract` workflow checks decdn's
+# changes against this repo; this one checks this repo's changes against what
+# users run. A dispatch can add any decdn ref, built from source.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "test/contract/**"
+      - "test/fake-gateway.ts"
+      - "test/support/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "KEYS"
+      - "scripts/decdn-contract.sh"
+      - ".github/workflows/gateway-releases.yml"
+  # Weekly, so a new decdn release is tested without waiting for a change here.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      decdn_ref:
+        description: A decdn branch, tag or commit to test too, built from source
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gateway-releases-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Which decdn gateways to test: the floor and the latest release, each only
+  # once a release carries the contract harness, plus a dispatched ref.
+  resolve:
+    name: resolve gateways
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      any: ${{ steps.matrix.outputs.any }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DECDN_REF: ${{ inputs.decdn_ref }}
+        run: |
+          floor="v$(node -p 'require("./package.json").decdn.gatewayFloor')"
+          latest=$(gh api repos/decdn/decdn/releases/latest --jq .tag_name)
+          entries='[]'
+          for tag in $(printf '%s\n' "$floor" "$latest" | sort -u); do
+            if gh api "repos/decdn/decdn/contents/crates/e2e/tests/gateway_sdk.rs?ref=$tag" \
+                 --silent 2>/dev/null; then
+              entries=$(jq -c --arg t "$tag" '. + [{mode: "tag", target: $t}]' <<<"$entries")
+            else
+              echo "::notice::decdn $tag carries no contract harness yet (it ships from the release after v0.2.0); not tested"
+            fi
+          done
+          if [[ -n "$DECDN_REF" ]]; then
+            entries=$(jq -c --arg r "$DECDN_REF" '. + [{mode: "ref", target: $r}]' <<<"$entries")
+          fi
+          echo "matrix=$entries" >> "$GITHUB_OUTPUT"
+          echo "any=$(jq 'length > 0' <<<"$entries")" >> "$GITHUB_OUTPUT"
+          echo "gateways: $entries"
+
+  contract:
+    name: contract (decdn ${{ matrix.target }})
+    needs: resolve
+    if: needs.resolve.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    # A cold run builds decdn's e2e harness (a ref also builds `decdn` and
+    # `decdn-node`) and runs two contract journeys at the 600s heavy tier.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    env:
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold -C debuginfo=line-tables-only -C split-debuginfo=unpacked"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /opt/hostedtoolcache/CodeQL \
+                      /usr/local/lib/android \
+                      /usr/share/dotnet \
+                      /opt/ghc \
+                      /usr/local/.ghcup
+          df -h /
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: rui314/setup-mold@v1
+        with:
+          make-default: false
+      - uses: foundry-rs/foundry-toolchain@v1.9.1
+        with:
+          version: v1.7.1
+          cache: false
+      - uses: taiki-e/install-action@v2.87.29
+        with:
+          tool: cargo-nextest
+      # decdn's build, keyed by what it builds: a release tag never changes, so
+      # its first run compiles and later runs restore. A ref is restored from
+      # nothing new and never saved.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: decdn -> target
+          shared-key: decdn-${{ matrix.target }}
+          save-if: ${{ matrix.mode == 'tag' }}
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run the contract suite against decdn ${{ matrix.target }}
+        env:
+          MODE: ${{ matrix.mode }}
+          TARGET: ${{ matrix.target }}
+        run: scripts/decdn-contract.sh "--$MODE" "$TARGET" --decdn-dir "$GITHUB_WORKSPACE/decdn"

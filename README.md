@@ -26,6 +26,9 @@ bundles and their manifests are
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0.1             | v0.3.0 or later for browser pages and public gateways ([cross-origin reads](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md#cross-origin-reads)); any loopback gateway from Node |
 
+CI runs the contract suite against the floor and the latest decdn release, with
+each release's signed binaries ([CONTRIBUTING.md](CONTRIBUTING.md#release-gateways)).
+
 ## Public gateway
 
 ```ts
