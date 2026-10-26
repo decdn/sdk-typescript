@@ -126,6 +126,20 @@ describe("public context", () => {
     expect((err as DecdnError).code).toBe("HASH_MISMATCH");
   });
 
+  it("still hashes a whole-body request the gateway answers with a window", async () => {
+    const { fake, bundle, blob } = publicFake();
+    const entry = bundle.entries.find((e) => e.path === "a.txt");
+    fake.partial.add(blob);
+    fake.partial.add(entry?.hash ?? "");
+    const c = await open(fake);
+    const r = await c.get(`decdn:${blob}`);
+    expect(r.verified).toBe(true);
+    await rejects(r.bytes(), "HASH_MISMATCH");
+    const e = await c.get(`decdn:${bundle.hash}/a.txt`);
+    expect(e.verified).toBe(true);
+    await rejects(e.bytes(), "TRUNCATED");
+  });
+
   it("fails a body the gateway cuts with TRUNCATED", async () => {
     const { fake, blob } = publicFake();
     fake.truncated.add(blob);

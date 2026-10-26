@@ -602,7 +602,9 @@ export class DecdnClient {
       await sleep(e.retryAfterSecs * 1000, opts.signal);
       response = await this.request(plan.url, "GET", headers, opts.signal);
     }
-    const whole = response.status === 200;
+    // Only a window the caller asked for goes unhashed: whatever status the
+    // gateway answers a whole-body request with, its bytes must hash.
+    const whole = opts.range === undefined || response.status === 200;
     const verified =
       plan.verified === true && !whole ? "skipped" : plan.verified;
     const length = response.headers.get("content-length");

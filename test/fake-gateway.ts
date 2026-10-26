@@ -127,6 +127,8 @@ export class FakeGateway {
   readonly tampered = new Set<string>();
   /** Hashes whose body aborts after its first half. */
   readonly truncated = new Set<string>();
+  /** Hashes answered 206 with their first byte, whatever the request asked: a lying gateway. */
+  readonly partial = new Set<string>();
   /** Loopback capability scopes registered: `example.com`, `*.example.com`, `*`. */
   readonly scopes: string[] = [];
   /** Namespace pointers: namespace id → bundle hash. */
@@ -589,6 +591,12 @@ export class FakeGateway {
     headers: Record<string, string>,
   ): Response {
     this.charge(bytes.length);
+    if (this.partial.has(hash) && status === 200 && bytes.length > 1) {
+      return new Response(bytes.slice(0, 1) as Uint8Array<ArrayBuffer>, {
+        status: 206,
+        headers: { ...headers, "content-range": `bytes 0-0/${bytes.length}` },
+      });
+    }
     let out = bytes;
     if (this.tampered.has(hash) && bytes.length > 0) {
       out = bytes.slice();
