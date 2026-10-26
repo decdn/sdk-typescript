@@ -126,6 +126,38 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
     );
   });
 
+  it("answers a pointer preflight on the bare host only", async () => {
+    const preflight = {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://app.example",
+        "access-control-request-method": "PUT",
+        "access-control-request-headers": "content-type",
+      },
+    };
+    const bare = await c.fetch(`${c.gatewayUrl}/_pointer`, preflight);
+    expect(bare.status).toBe(204);
+    expect(bare.headers.get("access-control-allow-methods")).toBe("PUT");
+    expect(bare.headers.get("access-control-allow-headers")).toBe(
+      "content-type",
+    );
+    const site = new URL(client.siteUrl(`decdn:${c.bundle}/`));
+    const off = await c.fetch(`${site.origin}/_pointer`, preflight);
+    expect(off.status).toBe(404);
+  });
+
+  it("lets any origin read a refusal", async () => {
+    const size = c.files["a.txt"]?.length ?? 0;
+    const r = await c.fetch(client.siteUrl(`decdn:${c.bundle}/a.txt`), {
+      headers: { origin: "https://app.example", range: `bytes=${size}-` },
+    });
+    expect(r.status).toBe(416);
+    expect(r.headers.get("access-control-allow-origin")).toBe("*");
+    expect(r.headers.get("access-control-expose-headers")).toContain(
+      "Content-Range",
+    );
+  });
+
   it("refuses an unknown host", async () => {
     const r = await c.fetch("http://evil.example/", {});
     expect(r.status).toBe(403);

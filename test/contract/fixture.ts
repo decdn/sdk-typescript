@@ -144,6 +144,13 @@ export async function contract(
     file = JSON.parse(readFileSync(path, "utf8")) as FixtureFile;
     if (file.mode !== mode) return undefined;
   } else {
+    // A real run sets this, so a lost DECDN_CONTRACT fails instead of
+    // quietly testing the fake.
+    if (process.env.DECDN_CONTRACT_REQUIRED === "1") {
+      throw new Error(
+        "DECDN_CONTRACT_REQUIRED=1 but DECDN_CONTRACT names no fixture",
+      );
+    }
     const f = await fake(mode);
     file = f;
     close = f.close;

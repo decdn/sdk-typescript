@@ -363,12 +363,16 @@ export class FakeGateway {
     }
     if (site === undefined && !bare) return text(403, "unknown Host\n");
     if (this.mode === "public" && req.method === "OPTIONS")
-      return this.preflight(url.pathname);
+      return this.preflight(url.pathname, site === undefined);
     if (site !== undefined) return this.site(req, url, site);
     return this.bare(req, url);
   }
 
-  private preflight(path: string): Response {
+  private preflight(path: string, bare: boolean): Response {
+    const api =
+      path === "/_delegate" || path === "/_capability" || path === "/_pointer";
+    if (api && !bare)
+      return text(404, "the gateway API answers on the gateway origin only\n");
     if (path === "/_delegate" || path === "/_capability")
       return text(404, "a public gateway has no API\n");
     const [methods, headers] =
