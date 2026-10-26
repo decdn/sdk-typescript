@@ -47,6 +47,12 @@ updates:
       # it by hand together with the matrix.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # commitlint 21 and lint-staged 17 need Node 22; contributors may be on
+      # the `engines` floor, 20.19. Unblock when the floor moves to 22.
+      - dependency-name: "@commitlint/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "lint-staged"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /

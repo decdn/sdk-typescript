@@ -1,10 +1,12 @@
 name: PR title
 
-# The PR title becomes the commit subject on main (squash merges take the PR
-# title), and commits here are Conventional Commits (AGENTS.md). This checks
-# the title before the merge, while it can still be fixed. Its own workflow,
-# not a ci.yml job, because it must re-run when the title is edited, and
-# ci.yml must not.
+# Commits here are Conventional Commits (AGENTS.md). Squashing a PR of more
+# than one commit makes its title the commit subject on main; a single-commit
+# squash or a rebase merge keeps the branch commits' own messages, which the
+# commit-msg hook checks (commitlint.config.mjs, the same types as below).
+# This checks the title before the merge, while it can still be fixed. Its own
+# workflow, not a ci.yml job, because it must re-run when the title is edited,
+# and ci.yml must not.
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]

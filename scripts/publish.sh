@@ -146,7 +146,9 @@ read -r NAME PKG_VERSION < <(node -p 'const p = require("./package.json"); p.nam
   die "package.json is at $PKG_VERSION, but the tag says $VERSION"
 echo "==> $NAME@$VERSION (dist-tag $DIST_TAG)"
 
-pnpm() { COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm "$@"; }
+# HUSKY=0: install and publish run `prepare`, and husky's `git config` from a
+# worktree would rewrite core.hooksPath in the maintainer's own checkout.
+pnpm() { HUSKY=0 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm "$@"; }
 echo "==> Install, lint, test, build"
 pnpm install --frozen-lockfile
 pnpm lint
