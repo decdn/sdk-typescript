@@ -108,6 +108,12 @@ the host is recognised: `DecdnClient.open({ gatewayUrl: "https://decdn.link" })`
 The bundle there is whatever the pointer names, so the page's own paths are
 not verified and `manifest()` needs a hash.
 
+A page on a loopback site origin reaches the gateway's delegate and capability
+API with a second client on the gateway itself:
+`DecdnClient.open({ gatewayUrl: "http://127.0.0.1:8484" })`. A loopback
+`gatewayUrl` opens a `loopback` client from any page; without the token, which
+a page cannot send, it reaches that API alone.
+
 ## Verification
 
 `get` takes `verify: "auto" | true | false` (default `"auto"`, or the
@@ -141,7 +147,7 @@ Every failure is a `DecdnError` with a stable `code`:
 | `CONFLICT`                                                                                                 | 409: a pointer `seq` that is not newer, a capability already registered                                     | `seq`                           |
 | `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `UPSTREAM`, `PAYLOAD_TOO_LARGE`, `UNPROCESSABLE` | 404, 401, 403, 429, 502, 413, 422                                                                           | `status`, `body`                |
 | `BAD_URI`                                                                                                  | A `decdn:` URI that does not parse, or 400                                                                  |                                 |
-| `HASH_MISMATCH`, `TRUNCATED`                                                                               | The body does not hash to its hash, or ends early                                                           |                                 |
+| `HASH_MISMATCH`, `TRUNCATED`                                                                               | The body does not hash to its hash, or is shorter or longer than declared                                   |                                 |
 | `MALFORMED_MANIFEST`, `BAD_CAPABILITY`                                                                     | A manifest or `dcap1:` token that does not decode                                                           |                                 |
 | `NETWORK`, `CONFIG`, `HTTP`                                                                                | The gateway is unreachable; the client cannot do what was asked; another status                             |                                 |
 

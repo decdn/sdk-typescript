@@ -26,7 +26,7 @@ export type DecdnErrorCode =
   | "UNPROCESSABLE"
   /** The bytes do not hash to the hash that names them. */
   | "HASH_MISMATCH"
-  /** The body ended early or the stream failed. */
+  /** The body is shorter or longer than declared, or the stream failed. */
   | "TRUNCATED"
   /** A bundle manifest that does not parse. */
   | "MALFORMED_MANIFEST"

@@ -54,10 +54,32 @@ export type PointerSigner =
 
 const N = secp256k1.Point.CURVE().n;
 const U64_MAX = (1n << 64n) - 1n;
+const U256_MAX = (1n << 256n) - 1n;
 const enc = new TextEncoder();
 
+/** @internal `value` as a bigint; `CONFIG` for a number that is not a safe integer. */
+export function integer(value: bigint | number, what: string): bigint {
+  if (typeof value === "number" && !Number.isSafeInteger(value))
+    throw bad(`${what} is an integer below 2^53, or a bigint: got ${value}`);
+  return BigInt(value);
+}
+
+/** The domain's chain id: an integer of at least 1 that fits a uint256. */
+function chainIdOf(domain: PointerDomain): bigint {
+  const id = integer(domain.chainId, "a chain id");
+  if (id < 1n || id > U256_MAX)
+    throw bad("a chain id is a uint256 of at least 1");
+  return id;
+}
+
+/** `n` as a 32-byte big-endian word. */
 function word(n: bigint): Uint8Array {
-  return fromHex(n.toString(16).padStart(64, "0")) ?? new Uint8Array(32);
+  const bytes =
+    n >= 0n && n <= U256_MAX
+      ? fromHex(n.toString(16).padStart(64, "0"))
+      : undefined;
+  if (bytes === undefined) throw bad(`${n} does not fit a uint256`);
+  return bytes;
 }
 
 function concat(...parts: Uint8Array[]): Uint8Array {
@@ -110,7 +132,7 @@ export function pointerTypedData(
     domain: {
       name: "decdn-pointer",
       version: "1",
-      chainId: BigInt(domain.chainId),
+      chainId: chainIdOf(domain),
       verifyingContract: domain.publisherRegistry,
     },
     types: {
@@ -136,7 +158,7 @@ function digest(domain: PointerDomain, pointer: Pointer): Uint8Array {
       DOMAIN_TYPE,
       keccak_256(enc.encode("decdn-pointer")),
       keccak_256(enc.encode("1")),
-      word(BigInt(domain.chainId)),
+      word(chainIdOf(domain)),
       concat(new Uint8Array(12), address(domain.publisherRegistry)),
     ),
   );
@@ -278,12 +300,12 @@ export class PointerApi {
       throw new DecdnError("BAD_URI", `not a manifest hash: ${args.root}`);
     }
     const pointer: Pointer = {
-      namespace: BigInt(args.namespace),
+      namespace: integer(args.namespace, "a namespace id"),
       root: root.toLowerCase(),
       seq:
         args.seq === undefined
           ? BigInt(Math.floor(Date.now() / 1000))
-          : BigInt(args.seq),
+          : integer(args.seq, "a pointer seq"),
     };
     const signature = await signPointer(domain, pointer, args.signer);
     const init: RequestInit = {

@@ -1,18 +1,22 @@
 // The body guard: a stream that passes the gateway's bytes through, hashes
 // them as they go when the request named the bytes by hash, and ends with an
-// error instead of `done` when they do not hash to it or when fewer bytes
-// arrive than the response declared.
+// error instead of `done` when they do not hash to it, when fewer bytes arrive
+// than declared, or when more arrive than the body may hold.
 import { DecdnError } from "./errors.js";
 import { createBlake3 } from "./hash.js";
 
 export interface GuardOptions {
   /** The hash the whole body must have, or `undefined` to skip the check. */
   hash?: string;
-  /** The length the response declared, if any. */
+  /** The fewest bytes the body holds: the manifest's size, or Content-Length. */
   length?: number;
+  /** The most bytes the body may hold: the manifest's size, or the window asked for. */
+  max?: number;
+  /** The request's signal: a read it aborts fails with its reason. */
+  signal?: AbortSignal;
 }
 
-/** `body`, guarded: a failed read is `TRUNCATED`, a short body `TRUNCATED`, a wrong hash `HASH_MISMATCH`. */
+/** `body`, guarded: a failed read is `TRUNCATED`, a short or long body `TRUNCATED`, a wrong hash `HASH_MISMATCH`. */
 export function guard(
   body: ReadableStream<Uint8Array> | null,
   opts: GuardOptions,
@@ -32,12 +36,27 @@ export function guard(
         controller.error(
           e instanceof DecdnError
             ? e
-            : new DecdnError("TRUNCATED", "the body ended early", { cause: e }),
+            : opts.signal?.aborted === true
+              ? opts.signal.reason
+              : new DecdnError("TRUNCATED", "the body ended early", {
+                  cause: e,
+                }),
         );
         return;
       }
       if (!chunk.done) {
         delivered += chunk.value.length;
+        if (opts.max !== undefined && delivered > opts.max) {
+          controller.error(
+            new DecdnError(
+              "TRUNCATED",
+              `the body ran past the ${opts.max} bytes it may hold`,
+            ),
+          );
+          // The error is the caller's already; a failed cancel adds nothing.
+          reader?.cancel().catch(() => undefined);
+          return;
+        }
         hasher?.update(chunk.value);
         controller.enqueue(chunk.value);
         return;
