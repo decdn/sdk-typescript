@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { build } from "esbuild";
 
-const ENTRIES = ["index"];
+const ENTRIES = ["index", "node"];
 
 rmSync("dist", { recursive: true, force: true });
 mkdirSync("dist");
@@ -18,6 +18,7 @@ for (const [format, ext] of [
     outExtension: { ".js": `.${ext}` },
     bundle: true,
     packages: "external",
+    external: ["node:*"],
     format,
     platform: "neutral",
     target: "es2022",

@@ -14,3 +14,15 @@ export {
   type ManifestEntry,
 } from "./manifest.js";
 export { parseCapability, type Capability } from "./capability.js";
+export {
+  DecdnClient,
+  DecdnResponse,
+  type ByteRange,
+  type Context,
+  type GetOptions,
+  type HeadInfo,
+  type OpenOptions,
+  type PointerDomain,
+  type Resolved,
+  type VerifyMode,
+} from "./client.js";
