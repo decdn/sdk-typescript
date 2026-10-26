@@ -1,0 +1,9 @@
+{
+  "comment": "Pinned by crates/incentive/src/capability_grant/tests.rs a_fixed_grant_encodes_to_a_pinned_token",
+  "token": "dcap1:IBEiM0RVZneImQCqu8zd7v8AESIzRFVmd4iZqrvM3e7_FAAAAAAAAAAAAAAAAAAAAAAAAAChgK3iBIDm_okHQQABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj9A",
+  "poolId": "0x11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff",
+  "signer": "0x00000000000000000000000000000000000000a1",
+  "spendingCap": "10000000",
+  "expiry": "1900000000",
+  "ownerSignature": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+}

@@ -1,0 +1,73 @@
+{
+  "name": "@decdn/client",
+  "version": "0.1.0",
+  "description": "TypeScript client for deCDN over a decdn gateway: verified fetches, bundles, loopback capabilities and namespace pointers.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/decdn/decdn.git",
+    "directory": "sdk/typescript"
+  },
+  "homepage": "https://github.com/decdn/decdn/tree/main/sdk/typescript#readme",
+  "bugs": "https://github.com/decdn/decdn/issues",
+  "keywords": [
+    "decdn",
+    "cdn",
+    "blake3",
+    "content-addressed",
+    "gateway"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "lint": "eslint . && prettier --check . && tsc --noEmit",
+    "format": "prettier --write .",
+    "test": "vitest run --project unit",
+    "test:browser": "vitest run --project browser"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^24",
+    "esbuild": "^0.28.2",
+    "eslint": "^9.39.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.4",
+    "typescript": "^6",
+    "typescript-eslint": "^8.72.0",
+    "vitest": "^5.0.5"
+  }
+}
