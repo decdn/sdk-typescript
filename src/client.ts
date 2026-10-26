@@ -16,7 +16,9 @@ import {
   type BundleManifest,
   type ManifestEntry,
 } from "./manifest.js";
+import { LoopbackApi } from "./loopback.js";
 import { rewritten, siteType } from "./mime.js";
+import { PointerApi, type PointerDomain } from "./pointer.js";
 import { formatUri, parseUri, SCHEME, type DecdnUri } from "./uri.js";
 import { collect, guard } from "./verify.js";
 
@@ -25,13 +27,6 @@ export type Context = "public" | "loopback" | "site";
 
 /** `"auto"` verifies what can be verified; `true` refuses what cannot; `false` verifies nothing. */
 export type VerifyMode = "auto" | boolean;
-
-/** The chain a namespace pointer is signed for: the EIP-712 domain of `PUT /_pointer`. */
-export interface PointerDomain {
-  chainId: bigint | number;
-  /** The `PublisherRegistry` contract address. */
-  publisherRegistry: string;
-}
 
 export interface OpenOptions {
   /** The gateway's origin: `https://decdn.link`, or `http://127.0.0.1:8484` for a loopback gateway. */
@@ -236,6 +231,10 @@ interface Plan {
 
 export class DecdnClient {
   readonly context: Context;
+  /** Namespace pointers (public gateway). */
+  readonly pointer: PointerApi = new PointerApi(this);
+  /** The delegate and capability API (loopback gateway). */
+  readonly loopback: LoopbackApi = new LoopbackApi(this);
   /** @internal */
   readonly fetch: Fetch;
   /** @internal The bare origin: the gateway URL's, or the site's own. */

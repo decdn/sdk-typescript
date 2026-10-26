@@ -96,3 +96,21 @@ export async function errorOf(response: Response): Promise<DecdnError> {
     details,
   );
 }
+
+/**
+ * `text` parsed as JSON with the integer values of `fields` read as `bigint`:
+ * the gateway writes u64 ids, caps and expiries as JSON numbers, which may
+ * exceed 2^53.
+ */
+export function parseWithBigInts(text: string, fields: string[]): unknown {
+  const names = fields.join("|");
+  const quoted = text.replace(
+    new RegExp(`("(?:${names})"\\s*:\\s*)(\\d+)`, "g"),
+    '$1"$2"',
+  );
+  return JSON.parse(quoted, (key, value: unknown) =>
+    fields.includes(key) && typeof value === "string" && /^\d+$/.test(value)
+      ? BigInt(value)
+      : value,
+  );
+}

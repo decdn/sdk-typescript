@@ -22,7 +22,20 @@ export {
   type GetOptions,
   type HeadInfo,
   type OpenOptions,
-  type PointerDomain,
   type Resolved,
   type VerifyMode,
 } from "./client.js";
+export {
+  PointerApi,
+  pointerSigningHash,
+  pointerTypedData,
+  recoverPointerSigner,
+  signPointer,
+  type Pointer,
+  type PointerDomain,
+  type PointerSet,
+  type PointerSigner,
+  type PointerTypedData,
+  type TypedDataSigner,
+} from "./pointer.js";
+export { LoopbackApi, type RegisteredCapability } from "./loopback.js";

@@ -4,15 +4,19 @@
 // `handle` answers a web `Request`; `fetch` is a drop-in `fetch` for the SDK.
 // The contract suite (test/contract) runs the same tests against this fake
 // and against a real gateway, so a drift between the two fails CI.
+import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
   base32ToHash,
   blake3Hex,
   formatUri,
   hashToBase32,
+  parseCapability,
   parseManifest,
   parseUri,
+  recoverPointerSigner,
   type BundleManifest,
   type DecdnUri,
+  type PointerDomain,
 } from "../src/index.js";
 
 export type FakeMode = "public" | "loopback";
@@ -116,6 +120,31 @@ function window(
   return [start, end - start + 1];
 }
 
+/** The largest API body the gateway reads (64 KiB). */
+const MAX_BODY = 64 * 1024;
+
+/** A capability registered for a loopback delegate. */
+interface Registered {
+  signer: string;
+  pool: string;
+  scope: string;
+  origin: string | null;
+  cap: bigint;
+  expiry: bigint;
+}
+
+/** The EIP-55 spelling of a lowercase `0x` address, as the gateway writes addresses. */
+function checksum(address: string): string {
+  const hex = address.slice(2).toLowerCase();
+  const hash = keccak_256(new TextEncoder().encode(hex));
+  let out = "0x";
+  for (let i = 0; i < hex.length; i++) {
+    const nibble = ((hash[i >> 1] ?? 0) >> (i % 2 === 0 ? 4 : 0)) & 0xf;
+    out += nibble >= 8 ? (hex[i] ?? "").toUpperCase() : (hex[i] ?? "");
+  }
+  return out;
+}
+
 export class FakeGateway {
   readonly mode: FakeMode;
   readonly host: string;
@@ -134,6 +163,14 @@ export class FakeGateway {
   /** Namespace pointers: namespace id → bundle hash. */
   readonly pointers = new Map<bigint, string>();
   readonly seen: Seen[] = [];
+  /** Loopback delegates by lowercase address, with the capability registered for each. */
+  readonly delegates = new Map<string, Registered | undefined>();
+  /** The deployment pointers are verified on (public). */
+  pointerDomain?: PointerDomain;
+  /** Namespace owners on that deployment, lowercase. */
+  readonly owners = new Map<bigint, string>();
+  /** The highest stored `seq` per namespace and signer. */
+  private readonly highWater = new Map<string, bigint>();
   allowance: number;
 
   constructor(opts: FakeOptions) {
@@ -288,6 +325,8 @@ export class FakeGateway {
 
   private async bare(req: Request, url: URL): Promise<Response> {
     const path = url.pathname;
+    const api = await this.api(req, path);
+    if (api !== undefined) return api;
     if (this.mode === "public") {
       if (path === "/_delegate" || path === "/_capability")
         return text(404, "a public gateway has no API\n");
@@ -333,6 +372,192 @@ export class FakeGateway {
     if (!this.covers(pageHost.toLowerCase()))
       return text(402, `no capability covers ${pageHost.toLowerCase()}\n`);
     return this.serve(uri, "bare", req.headers.get("range"));
+  }
+
+  /** The gateway API on the bare host, or `undefined` for a content path. */
+  private async api(req: Request, path: string): Promise<Response | undefined> {
+    const method = req.method;
+    if (this.mode === "public") {
+      if (path === "/_pointer" && method === "PUT") return this.putPointer(req);
+      return undefined;
+    }
+    const origin = req.headers.get("origin");
+    const cors = (r: Response): Response => {
+      if (origin !== null) {
+        r.headers.set("access-control-allow-origin", origin);
+        r.headers.set("vary", "Origin");
+      }
+      return r;
+    };
+    if (method === "OPTIONS") {
+      if (path !== "/_delegate" && path !== "/_capability")
+        return text(403, "no cross-origin access\n");
+      if (origin === null) return text(403, "no Origin\n");
+      return cors(
+        text(204, "", {
+          "access-control-allow-methods": "GET, PUT",
+          "access-control-allow-headers": "content-type",
+          "access-control-max-age": "600",
+          "access-control-allow-private-network": "true",
+        }),
+      );
+    }
+    const page =
+      origin !== null && origin !== "null"
+        ? new URL(origin).hostname
+        : undefined;
+    const authorized = this.authorized(req);
+    if (path === "/_delegate" && method === "GET") {
+      if (!authorized && page === undefined)
+        return cors(text(403, "the token or a page origin is required\n"));
+      const address = `0x${Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      this.delegates.set(address, undefined);
+      return cors(json(200, { address: checksum(address) }));
+    }
+    if (path === "/_capability" && method === "PUT") {
+      if (!authorized && page === undefined)
+        return cors(text(403, "the token or a page origin is required\n"));
+      return cors(
+        await this.register(req, authorized ? undefined : page, origin),
+      );
+    }
+    if (path === "/_capability" && method === "GET") {
+      if (!authorized) return text(401, "token required\n");
+      const list = [...this.delegates.entries()].flatMap(([, r]) =>
+        r === undefined ? [] : [r],
+      );
+      return new Response(
+        `[${list
+          .map(
+            (r) =>
+              `{"signer":"${checksum(r.signer)}","pool":"${r.pool}","scope":"${r.scope}","origin":${r.origin === null ? "null" : JSON.stringify(r.origin)},"cap":${r.cap},"expiry":${r.expiry},"spent":false}`,
+          )
+          .join(",")}]`,
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    if (path === "/_pointer" && method === "PUT")
+      return text(404, "a loopback gateway holds no namespace pointers\n");
+    return undefined;
+  }
+
+  private async register(
+    req: Request,
+    page: string | undefined,
+    origin: string | null,
+  ): Promise<Response> {
+    const body = await req.text();
+    if (body.length > MAX_BODY) return text(413, "body too large\n");
+    let request: { capability?: unknown; scope?: unknown };
+    try {
+      request = JSON.parse(body) as typeof request;
+    } catch (e) {
+      return text(
+        422,
+        `expected {"capability", "scope"}: ${(e as Error).message}\n`,
+      );
+    }
+    if (
+      typeof request.capability !== "string" ||
+      typeof request.scope !== "string"
+    ) {
+      return text(422, 'expected {"capability", "scope"}\n');
+    }
+    const scope = request.scope;
+    if (!/^(\*|(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*)$/.test(scope))
+      return text(422, `invalid scope ${scope}\n`);
+    if (page !== undefined && scope !== page && scope !== `*.${page}`) {
+      return text(403, `a page registers only a scope that covers itself\n`);
+    }
+    let grant;
+    try {
+      grant = parseCapability(request.capability.trim());
+    } catch (e) {
+      return text(422, `${(e as Error).message}\n`);
+    }
+    if (grant.expiry <= BigInt(Math.floor(Date.now() / 1000)))
+      return text(422, "the capability has expired\n");
+    const signer = grant.signer.toLowerCase();
+    if (!this.delegates.has(signer)) {
+      return text(
+        409,
+        "the capability names no delegate this gateway is holding: get one from GET /_delegate\n",
+      );
+    }
+    if (this.delegates.get(signer) !== undefined) {
+      return text(
+        409,
+        "that delegate already holds a capability: get a new one from GET /_delegate\n",
+      );
+    }
+    this.delegates.set(signer, {
+      signer,
+      pool: grant.poolId,
+      scope,
+      origin: page === undefined ? null : origin,
+      cap: grant.spendingCap,
+      expiry: grant.expiry,
+    });
+    this.scopes.push(scope);
+    return new Response(
+      `{"signer":"${checksum(signer)}","scope":"${scope}","expiry":${grant.expiry}}`,
+      {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  }
+
+  private async putPointer(req: Request): Promise<Response> {
+    const body = await req.text();
+    if (body.length > MAX_BODY) return text(413, "body too large\n");
+    const m =
+      /^\s*\{\s*"namespace"\s*:\s*(\d+)\s*,\s*"root"\s*:\s*"0x([0-9a-fA-F]{64})"\s*,\s*"seq"\s*:\s*(\d+)\s*,\s*"signature"\s*:\s*"(0x[0-9a-fA-F]*)"\s*\}\s*$/.exec(
+        body,
+      );
+    if (m === null)
+      return text(422, 'expected {"namespace","root","seq","signature"}\n');
+    const [, nsText = "", rootHex = "", seqText = "", signature = ""] = m;
+    const namespace = BigInt(nsText);
+    const seq = BigInt(seqText);
+    const root = rootHex.toLowerCase();
+    if (this.pointerDomain === undefined) return text(502, "no chain\n");
+    let signer: string;
+    try {
+      signer = recoverPointerSigner(
+        this.pointerDomain,
+        { namespace, root, seq },
+        signature,
+      );
+    } catch {
+      return text(422, "the pointer signature is malformed\n");
+    }
+    const key = `${namespace}:${signer}`;
+    const held = this.highWater.get(key);
+    if (held !== undefined && seq <= held) {
+      return new Response(
+        `{"error":"the gateway holds a pointer at or above this seq","seq":${held}}`,
+        {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }
+    const owner = this.owners.get(namespace);
+    if (owner === undefined)
+      return text(404, `namespace ${namespace} does not exist\n`);
+    if (owner !== signer) {
+      return text(
+        403,
+        `the pointer is signed by ${signer}; namespace ${namespace} is owned by ${owner}\n`,
+      );
+    }
+    this.highWater.set(key, seq);
+    this.pointers.set(namespace, root);
+    return new Response(
+      `{"namespace":${namespace},"root":"${root}","seq":${seq},"url":"http://${namespace}.${this.host}/"}`,
+      { status: 201, headers: { "content-type": "application/json" } },
+    );
   }
 
   private siteLocation(uri: DecdnUri): string {
