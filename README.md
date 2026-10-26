@@ -115,7 +115,7 @@ client's own default from `open`). `response.verified` says what happened:
 | A blob by hash              | `true`      | The whole body hashes to the URI's hash.                                                                         |
 | A bundle entry              | `true`      | The client reads the bundle manifest (once per client, itself verified) and the body hashes to the entry's hash. |
 | A page or stylesheet entry  | `true`      | A site rewrites HTML and CSS as it serves them, so the client fetches these by their entry hash instead.         |
-| A `range`                   | `"skipped"` | A window does not hash to anything.                                                                              |
+| A `range` of a bundle entry | `"skipped"` | A window does not hash to anything. A blob has no declared size, so a range on one is refused with `CONFIG`.     |
 | A bundle's index or listing | `"skipped"` | The gateway renders it.                                                                                          |
 | Any, with `verify: false`   | `false`     | Nothing is hashed and no manifest is read.                                                                       |
 

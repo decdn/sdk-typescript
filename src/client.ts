@@ -216,6 +216,22 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** `promise`, or `signal`'s reason as soon as it aborts. */
+function untilAborted<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    promise
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
 /** `uri` without `decdn:` and the hash: `[/<path>][?ns=<id>]`, canonically encoded. */
 function tail(uri: DecdnUri): string {
   return formatUri(uri).slice(SCHEME.length + 64);
@@ -391,14 +407,15 @@ export class DecdnClient {
     if (cached !== undefined) {
       this.manifests.delete(hash);
       this.manifests.set(hash, cached);
-      return cached;
+      return untilAborted(cached, signal);
     }
+    // One read serves every caller waiting on this hash, so it carries no
+    // caller's signal: each caller stops waiting on its own abort instead.
     const pending = (async () => {
       const response = await this.request(
         this.bareUrl({ hash, kind: "blob" }),
         "GET",
         {},
-        signal,
       );
       return parseManifest(
         await collect(guard(response.body, {}), MAX_MANIFEST_BYTES),
@@ -412,7 +429,7 @@ export class DecdnClient {
       if (oldest === undefined) break;
       this.manifests.delete(oldest);
     }
-    return pending;
+    return untilAborted(pending, signal);
   }
 
   /** The manifest entry `uri` names; `NOT_FOUND` when the bundle has none. */
@@ -517,6 +534,12 @@ export class DecdnClient {
     }
     const uri = this.parse(target);
     if (uri.kind === "blob") {
+      // The gateway serves a blob whole: nothing declares its size, so a
+      // range would come back as every byte, or as an unverifiable window.
+      if (ranged)
+        throw config(
+          "a blob has no declared size to range: fetch it whole, or range a bundle entry",
+        );
       return mode === false
         ? { url: this.bareUrl(uri), verified: false }
         : { url: this.bareUrl(uri), hash: uri.hash, verified: true };

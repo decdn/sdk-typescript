@@ -221,6 +221,37 @@ describe("public context", () => {
     );
   });
 
+  it("refuses a range on a blob before any request", async () => {
+    const { fake, blob } = publicFake();
+    fake.partial.add(blob);
+    const c = await open(fake);
+    for (const verify of ["auto", true, false] as const) {
+      await rejects(
+        c.get(`decdn:${blob}`, { range: { offset: 0, length: 1 }, verify }),
+        "CONFIG",
+      );
+    }
+    expect(fake.seen).toHaveLength(0);
+  });
+
+  it("keeps one caller's abort out of another's manifest read", async () => {
+    const { fake, bundle } = publicFake();
+    const slow: typeof fetch = (input, init) =>
+      new Promise((resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError")),
+        );
+        setTimeout(() => fake.fetch(input, init).then(resolve, reject), 20);
+      });
+    const c = await DecdnClient.open({ gatewayUrl: fake.url, fetch: slow });
+    const ctrl = new AbortController();
+    const a = c.get(`decdn:${bundle.hash}/a.txt`, { signal: ctrl.signal });
+    const b = c.get(`decdn:${bundle.hash}/a.txt`);
+    ctrl.abort();
+    await expect(a).rejects.toThrow();
+    expect(await (await b).text()).toBe("abc");
+  });
+
   it("maps a range past the end to RANGE_NOT_SATISFIABLE with the size", async () => {
     const { fake, bundle } = publicFake();
     const c = await open(fake);
