@@ -424,6 +424,26 @@ describe("public context", () => {
     },
   );
 
+  it(
+    "fetches by hash without waiting on a page whose clone is kept unread",
+    { timeout: 1000 },
+    async () => {
+      const { fake, bundle } = publicFake();
+      const site = servedAs(fake, "text/html");
+      const kept: Response[] = [];
+      const c = await DecdnClient.open({
+        gatewayUrl: fake.url,
+        fetch: async (input, init) => {
+          const r = await site(input, init);
+          kept.push(r.clone());
+          return r;
+        },
+      });
+      const r = await c.get(`decdn:${bundle.hash}/a.txt`);
+      expect(await r.text()).toBe("abc");
+    },
+  );
+
   it("takes a rewritten type as served when verification is off", async () => {
     const { fake, bundle } = publicFake();
     const c = await DecdnClient.open({

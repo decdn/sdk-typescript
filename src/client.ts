@@ -662,8 +662,9 @@ export class DecdnClient {
       isRewrittenType(response.headers.get("content-type"))
     ) {
       contentType = response.headers.get("content-type") ?? undefined;
-      // The page is dropped unread: a failure to cancel it changes nothing.
-      await response.body?.cancel().catch(() => undefined);
+      // The page is dropped unread, without waiting: a tee branch's cancel
+      // settles only once its sibling does, and a failure changes nothing.
+      response.body?.cancel().catch(() => undefined);
       response = await this.fetchRetrying(plan.blobUrl, headers, opts);
     }
     // Only a window the caller asked for goes unhashed: whatever status the
