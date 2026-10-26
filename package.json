@@ -75,6 +75,7 @@
     ]
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@eslint/js": "^9.39.0",
     "@types/node": "^24",
     "@vitest/browser-playwright": "^5.0.5",
@@ -83,6 +84,7 @@
     "eslint-config-prettier": "^10.1.8",
     "playwright": "^1.64.1",
     "prettier": "^3.9.4",
+    "publint": "^0.3.25",
     "typescript": "^6",
     "typescript-eslint": "^8.72.0",
     "vitest": "^5.0.5"

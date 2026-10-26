@@ -1,0 +1,7 @@
+# Actions are pinned to version tags, which Dependabot bumps, across the decdn
+# org, so a tag ref is accepted wherever zizmor would ask for a commit hash.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": ref-pin

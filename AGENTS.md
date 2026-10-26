@@ -19,6 +19,7 @@ pnpm install --frozen-lockfile
 pnpm lint            # eslint + prettier --check + tsc --noEmit
 pnpm test            # unit + script + contract (fake gateway) tests
 pnpm build           # dist/ via scripts/build.mjs (esbuild ESM/CJS + tsc d.ts)
+scripts/check-package.sh  # after the build: publint + arethetypeswrong
 pnpm test:browser    # Chromium smoke (needs playwright's chromium-headless-shell)
 ```
 
