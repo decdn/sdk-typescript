@@ -99,15 +99,15 @@ jobs:
                       /opt/ghc \
                       /usr/local/.ghcup
           df -h /
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: rui314/setup-mold@v1
         with:
           make-default: false
-      - uses: foundry-rs/foundry-toolchain@v1.9.1
+      - uses: foundry-rs/foundry-toolchain@v1.9.2
         with:
           version: v1.7.1
           cache: false
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.31
         with:
           tool: cargo-nextest
       # decdn's build, keyed by what it builds: a release tag never changes, so
