@@ -2,7 +2,10 @@
 // site rewrites it as it streams (the gateway rewrites the types mime_guess
 // maps these extensions to:
 // https://github.com/decdn/decdn/blob/main/crates/cli/src/commands/gateway/rewrite.rs),
-// and the type a site serves it as, for the common web types.
+// and the type a site serves it as, for the common web types. When it
+// verifies off loopback, the client fetches these entries by their hash up
+// front, and fetches by hash again any other entry a site answers with a
+// type it rewrites.
 
 /** Extensions a site serves as `text/html` or `text/css`, rewritten as they stream. */
 const REWRITTEN = /\.(html?|hxt|shtml|css)$/i;

@@ -20,6 +20,28 @@ and the package follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Site pages reach a loopback gateway named by URL.** On a site origin,
+  `open({ gatewayUrl })` with a loopback URL gives a `loopback` client for the
+  delegate and capability API, instead of a `site` client that refuses it.
+- **A page's own paths keep their query.** `get("/app.js?v=2")` on a site
+  requests `/app.js?v=2`, and carries no `?ns=`: the site's host names the
+  namespace.
+- **An entry served as HTML or CSS under another name comes by its hash.**
+  The client knows by name which entries a site rewrites. When a site, or a
+  server in front of it, answers any other verified entry with HTML or CSS,
+  the client fetches it again by its entry hash and verifies it, keeping the
+  site's `contentType`.
+- **Aborts surface as aborts.** Aborting a `get` while its body streams
+  rejects with the signal's reason, not `TRUNCATED`; `retry: true` does not
+  wait out `Retry-After` once the signal aborts, and leaves no listener on it.
+- **A body past its bound fails.** A whole entry longer than its manifest
+  size, or a window longer than the range asked for, ends with `TRUNCATED`.
+- **A failed manifest read leaves a newer one cached.** After an eviction,
+  a failing read of a hash keeps the read of it that replaced it.
+- **Pointer integers are checked.** A `chainId` that is not a uint256 of at
+  least 1, and a `number` namespace, seq or chain id that is not a safe
+  integer, fail with `CONFIG`, not a signature for another domain or a
+  `RangeError`.
 - **`@decdn/client/node` has types under `moduleResolution: "bundler"`.**
   TypeScript's `bundler` resolution, the default in Vite and Next.js
   templates, does not set the `node` condition; a type-only `types` fallback

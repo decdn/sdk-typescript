@@ -114,9 +114,10 @@ if [[ -n "$TAG" ]]; then
   gpg --quiet --verify "$BIN/SHA256SUMS.asc" "$BIN/SHA256SUMS" 2>/dev/null ||
     die "SHA256SUMS of $TAG is not signed by a key in KEYS"
   # Exactly the two archives, each listed: `--ignore-missing` alone would pass
-  # an archive SHA256SUMS does not name.
+  # an archive SHA256SUMS does not name. The tag check leaves dots the only
+  # ERE metacharacter in a name.
   for archive in "${ARCHIVES[@]}"; do
-    grep -E "^[0-9a-f]{64}  $archive\$" "$BIN/SHA256SUMS" >> "$BIN/wanted" ||
+    grep -E "^[0-9a-f]{64}  ${archive//./\\.}\$" "$BIN/SHA256SUMS" >> "$BIN/wanted" ||
       die "SHA256SUMS of $TAG does not list $archive"
   done
   (cd "$BIN" && sha256sum --quiet --check wanted) || die "a $TAG archive does not match SHA256SUMS"

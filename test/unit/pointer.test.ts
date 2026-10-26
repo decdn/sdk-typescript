@@ -165,6 +165,41 @@ describe("pointer.set", () => {
     expect(fake.seen).toHaveLength(0);
   });
 
+  it("refuses a chain id, namespace or seq that does not encode exactly", async () => {
+    const code = (f: () => unknown) => {
+      try {
+        f();
+      } catch (e) {
+        return (e as DecdnError).code;
+      }
+      return "returned";
+    };
+    for (const chainId of [-1, 0, 1.5, 2 ** 53 + 2, 1n << 256n]) {
+      const bad = { ...domain, chainId };
+      expect(code(() => pointerSigningHash(bad, pointer))).toBe("CONFIG");
+      expect(code(() => pointerTypedData(bad, pointer))).toBe("CONFIG");
+    }
+    const widest = { ...domain, chainId: (1n << 256n) - 1n };
+    expect(pointerSigningHash(widest, pointer)).toMatch(/^0x[0-9a-f]{64}$/);
+    const fake = gateway();
+    const c = await open(fake);
+    const signer = { privateKey: fixture.privateKey };
+    const set = (namespace: number, seq?: number) =>
+      c.pointer
+        .set({
+          namespace,
+          root: fixture.root,
+          signer,
+          ...(seq === undefined ? {} : { seq }),
+        })
+        .catch((e: unknown) => (e as DecdnError).code);
+    expect(await set(1.5)).toBe("CONFIG");
+    expect(await set(2 ** 53 + 2)).toBe("CONFIG");
+    expect(await set(7, 2 ** 53 + 2)).toBe("CONFIG");
+    expect(c.namespaceUrl.bind(c, 1.5)).toThrow(DecdnError);
+    expect(fake.seen).toHaveLength(0);
+  });
+
   it("defaults seq to the current Unix second", async () => {
     const fake = gateway();
     const bundle = fake.addBundle({ "a.txt": "a" });

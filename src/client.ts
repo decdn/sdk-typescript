@@ -3,7 +3,8 @@
 // - `public`: a gateway with `--public-url`; blobs from the bare host, entries
 //   from their site host, every request paid by the operator.
 // - `loopback`: the local gateway with its token; every request on the bare
-//   host, paid by the capability that covers `host`.
+//   host, paid by the capability that covers `host`. A page reaches it
+//   without the token, for `/_delegate` and `/_capability` alone.
 // - `site`: a page served from a site origin; its own entries same-origin and
 //   other content through `/_decdn/`.
 import { base32ToHash, hashToBase32 } from "./base32.js";
@@ -18,7 +19,7 @@ import {
 } from "./manifest.js";
 import { LoopbackApi } from "./loopback.js";
 import { rewritten, siteType } from "./mime.js";
-import { PointerApi, type PointerDomain } from "./pointer.js";
+import { integer, PointerApi, type PointerDomain } from "./pointer.js";
 import { formatUri, parseUri, SCHEME, type DecdnUri } from "./uri.js";
 import { collect, guard } from "./verify.js";
 
@@ -101,12 +102,15 @@ export class DecdnResponse {
     response: Response,
     body: ReadableStream<Uint8Array>,
     verified: boolean | "skipped",
+    contentType?: string,
   ) {
     this.status = response.status;
     this.headers = response.headers;
     this.url = response.url;
     this.contentType =
-      response.headers.get("content-type") ?? "application/octet-stream";
+      contentType ??
+      response.headers.get("content-type") ??
+      "application/octet-stream";
     const length = response.headers.get("content-length");
     if (length !== null && /^\d+$/.test(length))
       this.contentLength = Number(length);
@@ -203,16 +207,17 @@ function config(message: string): DecdnError {
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted === true) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(signal.reason);
-      },
-      { once: true },
-    );
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 
@@ -243,6 +248,14 @@ interface Plan {
   hash?: string;
   length?: number;
   verified: boolean | "skipped";
+  /** The entry by its hash, unrewritten: where a verified entry comes from when its site answers with a type the gateway rewrites. */
+  blobUrl?: string;
+}
+
+/** The types a site rewrites as it streams (`Rewrite::for_type` in the gateway). */
+function isRewrittenType(contentType: string | null): boolean {
+  const essence = (contentType ?? "").split(";")[0]?.trim().toLowerCase();
+  return essence === "text/html" || essence === "text/css";
 }
 
 export class DecdnClient {
@@ -284,9 +297,11 @@ export class DecdnClient {
   }
 
   /**
-   * A client for the gateway at `gatewayUrl`, or, with no URL in a page served
-   * from a site origin (`[<ns>.]<hash32>.<host>`, or `<ns>.<host>` under the
-   * configured gateway), for that site.
+   * A client for the gateway at `gatewayUrl`, or, in a page served from a
+   * site origin (`[<ns>.]<hash32>.<host>`, or `<ns>.<host>` under the
+   * configured gateway), for that site. A loopback `gatewayUrl` opens the
+   * loopback gateway from any page; a page, which cannot send the token,
+   * reaches its delegate and capability API alone.
    */
   static async open(opts: OpenOptions = {}): Promise<DecdnClient> {
     let gateway: URL | undefined;
@@ -301,10 +316,14 @@ export class DecdnClient {
         );
       }
     }
+    const loopback =
+      gateway !== undefined &&
+      (opts.token !== undefined || isLoopbackHost(gateway.hostname));
     const loc = (
       globalThis as { location?: { protocol?: string; host?: string } }
     ).location;
     if (
+      !loopback &&
       loc?.host !== undefined &&
       loc.host !== "" &&
       loc.protocol !== undefined
@@ -316,8 +335,6 @@ export class DecdnClient {
     if (gateway === undefined) {
       throw config("no gatewayUrl, and the page is not on a site origin");
     }
-    const loopback =
-      opts.token !== undefined || isLoopbackHost(gateway.hostname);
     if (
       opts.token !== undefined &&
       (opts.host === undefined || opts.host === "")
@@ -372,7 +389,7 @@ export class DecdnClient {
 
   /** The host a namespace's pointer serves at on a public gateway: `https://<ns>.<host>/`. */
   namespaceUrl(namespace: bigint | number): string {
-    const ns = BigInt(namespace);
+    const ns = integer(namespace, "a namespace id");
     if (ns <= 0n) throw config("a namespace id is at least 1");
     if (this.site !== undefined)
       return `${this.site.protocol}//${ns}.${this.site.suffix}/`;
@@ -423,7 +440,11 @@ export class DecdnClient {
       );
     })();
     this.manifests.set(hash, pending);
-    pending.catch(() => this.manifests.delete(hash));
+    // A failed read drops its own entry only: once evicted, the hash's slot
+    // may hold a newer read.
+    pending.catch(() => {
+      if (this.manifests.get(hash) === pending) this.manifests.delete(hash);
+    });
     while (this.manifests.size > this.cacheSize) {
       const oldest = this.manifests.keys().next().value;
       if (oldest === undefined) break;
@@ -482,22 +503,36 @@ export class DecdnClient {
     return response;
   }
 
-  /** Where an entry comes from, given its manifest entry (when verifying). */
-  private entryUrl(uri: DecdnUri, own: boolean, entry?: ManifestEntry): string {
+  /** An entry by its own hash, as a blob: the bytes the manifest names, unrewritten. */
+  private entryBlobUrl(uri: DecdnUri, entry: ManifestEntry): string {
+    return this.bareUrl({
+      hash: entry.hash,
+      kind: "blob",
+      ...(uri.namespace === undefined ? {} : { namespace: uri.namespace }),
+    });
+  }
+
+  /**
+   * Where an entry comes from, given its manifest entry (when verifying).
+   * `own` holds the query of a path on the site's own bundle: the site serves
+   * by path alone and leaves the query to the page, and its host already
+   * names the namespace.
+   */
+  private entryUrl(uri: DecdnUri, own?: string, entry?: ManifestEntry): string {
     if (
       entry !== undefined &&
       rewritten(uri.path ?? "") &&
       this.context !== "loopback"
     ) {
-      return this.bareUrl({
-        hash: entry.hash,
-        kind: "blob",
-        ...(uri.namespace === undefined ? {} : { namespace: uri.namespace }),
-      });
+      return this.entryBlobUrl(uri, entry);
     }
     if (this.site !== undefined)
-      return own
-        ? `${this.site.origin}${tail({ ...uri, kind: "entry" })}`
+      return own !== undefined
+        ? `${this.site.origin}${tail({
+            hash: uri.hash,
+            kind: "entry",
+            ...(uri.path === undefined ? {} : { path: uri.path }),
+          })}${own}`
         : this.bareUrl(uri);
     return this.context === "loopback" ? this.bareUrl(uri) : this.siteUrl(uri);
   }
@@ -518,6 +553,7 @@ export class DecdnClient {
           "a path is relative to a site: open the client on a site page",
         );
       const path = target.split(/[?#]/)[0] ?? "/";
+      const query = target.slice(path.length).split("#")[0] ?? "";
       if (this.site.hash === undefined || path === "/") {
         unverifiable(
           this.site.hash === undefined
@@ -530,7 +566,7 @@ export class DecdnClient {
       const uri = parseUri(`${SCHEME}${this.site.hash}${entry}`);
       if (this.site.namespace !== undefined)
         uri.namespace = this.site.namespace;
-      return this.planEntry(uri, true, mode, ranged, signal);
+      return this.planEntry(uri, query, mode, ranged, signal);
     }
     const uri = this.parse(target);
     if (uri.kind === "blob") {
@@ -558,12 +594,12 @@ export class DecdnClient {
       return { url, verified: off };
     }
     const own = this.site !== undefined && this.site.hash === uri.hash;
-    return this.planEntry(uri, own, mode, ranged, signal);
+    return this.planEntry(uri, own ? "" : undefined, mode, ranged, signal);
   }
 
   private async planEntry(
     uri: DecdnUri,
-    own: boolean,
+    own: string | undefined,
     mode: VerifyMode,
     ranged: boolean,
     signal?: AbortSignal,
@@ -583,6 +619,9 @@ export class DecdnClient {
       verified: true,
     };
     if (entry.size !== undefined) plan.length = entry.size;
+    const blobUrl = this.entryBlobUrl(uri, entry);
+    if (plan.url !== blobUrl && this.context !== "loopback")
+      plan.blobUrl = blobUrl;
     return plan;
   }
 
@@ -613,16 +652,19 @@ export class DecdnClient {
       }
       headers.range = `bytes=${offset}-${length === undefined ? "" : offset + length - 1}`;
     }
-    let response: Response;
-    try {
-      response = await this.request(plan.url, "GET", headers, opts.signal);
-    } catch (e) {
-      const retryable =
-        e instanceof DecdnError &&
-        ["PAYMENT_REQUIRED", "POOL_UNFUNDED", "RATE_LIMITED"].includes(e.code);
-      if (!opts.retry || !retryable || e.retryAfterSecs === undefined) throw e;
-      await sleep(e.retryAfterSecs * 1000, opts.signal);
-      response = await this.request(plan.url, "GET", headers, opts.signal);
+    let response = await this.fetchRetrying(plan.url, headers, opts);
+    // A site rewrites what it serves as HTML or CSS. `rewritten` picks those
+    // entries out by name up front; any other the site answers with such a
+    // type comes by its hash, keeping the site's type.
+    let contentType: string | undefined;
+    if (
+      plan.blobUrl !== undefined &&
+      isRewrittenType(response.headers.get("content-type"))
+    ) {
+      contentType = response.headers.get("content-type") ?? undefined;
+      // The page is dropped unread: a failure to cancel it changes nothing.
+      await response.body?.cancel().catch(() => undefined);
+      response = await this.fetchRetrying(plan.blobUrl, headers, opts);
     }
     // Only a window the caller asked for goes unhashed: whatever status the
     // gateway answers a whole-body request with, its bytes must hash.
@@ -633,14 +675,43 @@ export class DecdnClient {
     const guardOpts: Parameters<typeof guard>[1] = {};
     if (verified === true && plan.hash !== undefined)
       guardOpts.hash = plan.hash;
-    if (whole && plan.length !== undefined) guardOpts.length = plan.length;
-    else if (length !== null && /^\d+$/.test(length))
-      guardOpts.length = Number(length);
+    // The manifest's size bounds a whole entry both ways, and a window holds
+    // at most what was asked for. Content-Length bounds a body from below
+    // only: a body decoded on the way can run past it.
+    if (whole && plan.length !== undefined) {
+      guardOpts.length = plan.length;
+      guardOpts.max = plan.length;
+    } else {
+      if (length !== null && /^\d+$/.test(length))
+        guardOpts.length = Number(length);
+      if (!whole && opts.range?.length !== undefined)
+        guardOpts.max = opts.range.length;
+    }
+    if (opts.signal !== undefined) guardOpts.signal = opts.signal;
     return new DecdnResponse(
       response,
       guard(response.body, guardOpts),
       verified,
+      contentType,
     );
+  }
+
+  /** A `GET` of `url`, once more after one `Retry-After` when `opts.retry` asks. */
+  private async fetchRetrying(
+    url: string,
+    headers: Record<string, string>,
+    opts: GetOptions,
+  ): Promise<Response> {
+    try {
+      return await this.request(url, "GET", headers, opts.signal);
+    } catch (e) {
+      const retryable =
+        e instanceof DecdnError &&
+        ["PAYMENT_REQUIRED", "POOL_UNFUNDED", "RATE_LIMITED"].includes(e.code);
+      if (!opts.retry || !retryable || e.retryAfterSecs === undefined) throw e;
+      await sleep(e.retryAfterSecs * 1000, opts.signal);
+      return this.request(url, "GET", headers, opts.signal);
+    }
   }
 
   /**
