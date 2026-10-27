@@ -717,7 +717,10 @@ export class DecdnClient {
 
   /**
    * What is known about `uri` without its bytes: on a public gateway from
-   * `HEAD`, elsewhere (where `HEAD` would cost a pull) from the manifest.
+   * `HEAD`, elsewhere (where `HEAD` would cost a pull) from the manifest. A
+   * public `HEAD` of a raw blob whose size the gateway does not know yet
+   * pays for one chunk group, the proof of its size, and is refused or fails
+   * as its `GET` would be.
    */
   async head(uri: string | DecdnUri): Promise<HeadInfo> {
     const u = this.parse(uri);

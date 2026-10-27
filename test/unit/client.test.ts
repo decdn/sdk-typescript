@@ -113,6 +113,7 @@ describe("public context", () => {
     expect(r.status).toBe(200);
     expect(r.verified).toBe(true);
     expect(r.contentType).toBe("application/octet-stream");
+    expect(r.contentLength).toBe(11);
     expect(await r.text()).toBe("other bytes");
     expect(paths(fake)).toEqual([`GET decdn.test/${blob}`]);
   });
@@ -137,16 +138,20 @@ describe("public context", () => {
 
   it("still hashes a whole-body request the gateway answers with a window", async () => {
     const { fake, bundle, blob } = publicFake();
-    const entry = bundle.entries.find((e) => e.path === "a.txt");
+    const sized = bundle.entries.find((e) => e.path === "a.txt");
+    const unsized = bundle.entries.find((e) => e.path === "unsized.txt");
     fake.partial.add(blob);
-    fake.partial.add(entry?.hash ?? "");
+    fake.partial.add(sized?.hash ?? "");
+    fake.partial.add(unsized?.hash ?? "");
     const c = await open(fake);
-    const r = await c.get(`decdn:${blob}`);
-    expect(r.verified).toBe(true);
-    await rejects(r.bytes(), "HASH_MISMATCH");
-    const e = await c.get(`decdn:${bundle.hash}/a.txt`);
-    expect(e.verified).toBe(true);
-    await rejects(e.bytes(), "TRUNCATED");
+    const u = await c.get(`decdn:${bundle.hash}/unsized.txt`);
+    expect(u.verified).toBe(true);
+    await rejects(u.bytes(), "HASH_MISMATCH");
+    for (const uri of [`decdn:${blob}`, `decdn:${bundle.hash}/a.txt`]) {
+      const r = await c.get(uri);
+      expect(r.verified).toBe(true);
+      await rejects(r.bytes(), "TRUNCATED");
+    }
   });
 
   it("fails a body the gateway cuts with TRUNCATED", async () => {
@@ -564,6 +569,60 @@ describe("public context", () => {
       contentType: "text/plain; charset=utf-8",
     });
     expect(fake.seen.map((s) => s.method)).toEqual(["HEAD"]);
+  });
+
+  it("reads a raw blob's size and hash from HEAD", async () => {
+    const { fake, blob } = publicFake();
+    const c = await open(fake);
+    expect(await c.head(`decdn:${blob}`)).toEqual({
+      size: 11,
+      hash: blob,
+      contentType: "application/octet-stream",
+    });
+    expect(fake.seen.map((s) => s.method)).toEqual(["HEAD"]);
+  });
+
+  it("maps a raw blob's HEAD refusals as its GET's", async () => {
+    const { fake, blob } = publicFake(0);
+    const c = await open(fake);
+    await rejects(c.head(`decdn:${blob}`), "PAYMENT_REQUIRED");
+    const funded = publicFake();
+    funded.fake.unfunded.add(funded.blob);
+    const d = await open(funded.fake);
+    await rejects(d.head(`decdn:${funded.blob}`), "POOL_UNFUNDED");
+  });
+
+  it("pays a raw blob's proof once, under a site's /_decdn/ too", async () => {
+    const { fake, bundle, blob } = publicFake(1 << 20);
+    const site = `http://${hashToBase32(bundle.hash)}.decdn.test`;
+    for (let i = 0; i < 2; i++) {
+      const r = await fake.fetch(`${site}/_decdn/${blob}`, { method: "HEAD" });
+      expect(r.status).toBe(200);
+      expect(r.headers.get("content-length")).toBe("11");
+    }
+    expect(fake.allowance).toBe((1 << 20) - 16 * 1024);
+  });
+
+  it("answers the empty blob with no proof", async () => {
+    const { fake } = publicFake(1);
+    const empty = fake.addBlob("");
+    const c = await open(fake);
+    expect((await c.head(`decdn:${empty}`)).size).toBe(0);
+    const r = await c.get(`decdn:${empty}`);
+    expect(r.contentLength).toBe(0);
+    expect(await r.bytes()).toEqual(new Uint8Array());
+    expect(fake.allowance).toBe(1);
+  });
+
+  it("admits a window of a raw blob by its chunk-group span", async () => {
+    const { fake } = publicFake(32 * 1024);
+    const big = fake.addBlob(new Uint8Array(64 * 1024));
+    const r = await fake.fetch(`http://decdn.test/${big}`, {
+      headers: { range: "bytes=0-0" },
+    });
+    expect(r.status).toBe(206);
+    expect(r.headers.get("content-range")).toBe(`bytes 0-0/${64 * 1024}`);
+    expect(fake.allowance).toBe(0);
   });
 
   it("serves a bundle as its site index, unverified", async () => {
