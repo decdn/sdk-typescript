@@ -592,6 +592,39 @@ describe("public context", () => {
     await rejects(d.head(`decdn:${funded.blob}`), "POOL_UNFUNDED");
   });
 
+  it("pays a raw blob's proof once, under a site's /_decdn/ too", async () => {
+    const { fake, bundle, blob } = publicFake(1 << 20);
+    const site = `http://${hashToBase32(bundle.hash)}.decdn.test`;
+    for (let i = 0; i < 2; i++) {
+      const r = await fake.fetch(`${site}/_decdn/${blob}`, { method: "HEAD" });
+      expect(r.status).toBe(200);
+      expect(r.headers.get("content-length")).toBe("11");
+    }
+    expect(fake.allowance).toBe((1 << 20) - 16 * 1024);
+  });
+
+  it("answers the empty blob with no proof", async () => {
+    const { fake } = publicFake(1);
+    const empty = fake.addBlob("");
+    const c = await open(fake);
+    expect((await c.head(`decdn:${empty}`)).size).toBe(0);
+    const r = await c.get(`decdn:${empty}`);
+    expect(r.contentLength).toBe(0);
+    expect(await r.bytes()).toEqual(new Uint8Array());
+    expect(fake.allowance).toBe(1);
+  });
+
+  it("admits a window of a raw blob by its chunk-group span", async () => {
+    const { fake } = publicFake(32 * 1024);
+    const big = fake.addBlob(new Uint8Array(64 * 1024));
+    const r = await fake.fetch(`http://decdn.test/${big}`, {
+      headers: { range: "bytes=0-0" },
+    });
+    expect(r.status).toBe(206);
+    expect(r.headers.get("content-range")).toBe(`bytes 0-0/${64 * 1024}`);
+    expect(fake.allowance).toBe(0);
+  });
+
   it("serves a bundle as its site index, unverified", async () => {
     const { fake, bundle } = publicFake();
     const c = await open(fake);

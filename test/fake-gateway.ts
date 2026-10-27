@@ -127,10 +127,22 @@ function window(
   return [start, end - start + 1];
 }
 
+/** The bytes a pull of `window` pays for: the window widened to whole chunk groups, within `size`. */
+function groupSpan([offset, len]: [number, number], size: number): number {
+  const start = Math.floor(offset / CHUNK_GROUP_BYTES) * CHUNK_GROUP_BYTES;
+  const end = Math.min(
+    Math.ceil((offset + len) / CHUNK_GROUP_BYTES) * CHUNK_GROUP_BYTES,
+    size,
+  );
+  return end - start;
+}
+
 /** The largest API body the gateway reads (64 KiB). */
 const MAX_BODY = 64 * 1024;
+/** The unit a pull pays for: a chunk group (16 KiB). */
+const CHUNK_GROUP_BYTES = 16 * 1024;
 /** What a raw blob's size proof spends of the allowance: one chunk group. */
-const PROOF_BYTES = 16 * 1024;
+const PROOF_BYTES = CHUNK_GROUP_BYTES;
 
 /** A capability registered for a loopback delegate. */
 interface Registered {
@@ -686,7 +698,10 @@ export class FakeGateway {
       } catch (e) {
         return text(400, `${(e as Error).message}\n`);
       }
-      response = await this.serve(uri, "site", req.headers.get("range"));
+      response =
+        req.method === "HEAD" && uri.kind === "blob"
+          ? this.headBlob(uri)
+          : await this.serve(uri, "site", req.headers.get("range"));
     } else {
       const entry =
         path.length > 1 && path.endsWith("/") ? `${path}index.html` : path;
@@ -768,7 +783,8 @@ export class FakeGateway {
       "x-content-type-options": "nosniff",
     };
     const bytes = this.blobs.get(uri.hash);
-    if (!this.proven.has(uri.hash)) {
+    // The empty root is empty, with no proof.
+    if (!this.proven.has(uri.hash) && bytes?.length !== 0) {
       if (this.allowance <= 0) {
         return this.refusal(
           402,
@@ -785,7 +801,7 @@ export class FakeGateway {
           "the gateway's pool cannot pay right now",
         );
       if (bytes === undefined) return text(404, "not found\n");
-      this.prove(uri.hash);
+      this.prove(uri.hash, bytes.length);
     }
     if (bytes !== undefined) {
       headers["content-length"] = String(bytes.length);
@@ -794,10 +810,10 @@ export class FakeGateway {
     return new Response(null, { headers });
   }
 
-  /** Pay for the size proof of the raw blob `hash`, once. */
-  private prove(hash: string): void {
+  /** Pay for the size proof of the raw blob `hash` of `size` bytes, once; the empty root needs none. */
+  private prove(hash: string, size: number): void {
     if (this.proven.has(hash)) return;
-    this.charge(PROOF_BYTES);
+    if (size > 0) this.charge(PROOF_BYTES);
     this.proven.add(hash);
   }
 
@@ -827,7 +843,7 @@ export class FakeGateway {
       // entry does.
       const bytes = this.blobs.get(uri.hash);
       if (bytes === undefined) return text(404, "not found\n");
-      this.prove(uri.hash);
+      this.prove(uri.hash, bytes.length);
       return this.sized(uri, uri.hash, bytes, bytes.length, range, {
         "content-type": "application/octet-stream",
         "content-disposition": `inline; filename="${uri.hash}"`,
@@ -896,9 +912,11 @@ export class FakeGateway {
   }
 
   /**
-   * The answer for `bytes` of known `size`: on a public gateway refused with
-   * 402 when it does not fit what is left of the allowance, else whole with
-   * its length, or one `range` as 206 (416 past the end).
+   * The answer for `bytes` of known `size`: one `range` as 206, or 416 past
+   * the end; else whole with its length. On a public gateway it is refused
+   * with 402 when what it pays for (the whole, or the window widened to
+   * chunk groups) does not fit what is left of the allowance, and it is
+   * charged that.
    */
   private sized(
     uri: DecdnUri,
@@ -908,7 +926,14 @@ export class FakeGateway {
     range: string | null,
     headers: Record<string, string>,
   ): Response {
-    if (this.mode === "public" && size > this.allowance) {
+    headers["accept-ranges"] = "bytes";
+    const w = window(range, size);
+    if (w === "unsatisfiable")
+      return text(416, "range not satisfiable\n", {
+        "content-range": `bytes */${size}`,
+      });
+    const billable = w === undefined ? size : groupSpan(w, size);
+    if (this.mode === "public" && billable > this.allowance) {
       return this.refusal(
         402,
         uri,
@@ -916,12 +941,8 @@ export class FakeGateway {
         "the response does not fit what is left of the gateway's allowance today",
       );
     }
-    headers["accept-ranges"] = "bytes";
-    const w = window(range, size);
-    if (w === "unsatisfiable")
-      return text(416, "range not satisfiable\n", {
-        "content-range": `bytes */${size}`,
-      });
+    // The pull pays for the aligned span; the body charges the window.
+    if (w !== undefined) this.charge(billable - w[1]);
     if (w === undefined) {
       headers["content-length"] = String(size);
       return this.body(hash, bytes, 200, headers);
