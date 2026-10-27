@@ -113,6 +113,7 @@ describe("public context", () => {
     expect(r.status).toBe(200);
     expect(r.verified).toBe(true);
     expect(r.contentType).toBe("application/octet-stream");
+    expect(r.contentLength).toBe(11);
     expect(await r.text()).toBe("other bytes");
     expect(paths(fake)).toEqual([`GET decdn.test/${blob}`]);
   });
@@ -137,16 +138,20 @@ describe("public context", () => {
 
   it("still hashes a whole-body request the gateway answers with a window", async () => {
     const { fake, bundle, blob } = publicFake();
-    const entry = bundle.entries.find((e) => e.path === "a.txt");
+    const sized = bundle.entries.find((e) => e.path === "a.txt");
+    const unsized = bundle.entries.find((e) => e.path === "unsized.txt");
     fake.partial.add(blob);
-    fake.partial.add(entry?.hash ?? "");
+    fake.partial.add(sized?.hash ?? "");
+    fake.partial.add(unsized?.hash ?? "");
     const c = await open(fake);
-    const r = await c.get(`decdn:${blob}`);
-    expect(r.verified).toBe(true);
-    await rejects(r.bytes(), "HASH_MISMATCH");
-    const e = await c.get(`decdn:${bundle.hash}/a.txt`);
-    expect(e.verified).toBe(true);
-    await rejects(e.bytes(), "TRUNCATED");
+    const u = await c.get(`decdn:${bundle.hash}/unsized.txt`);
+    expect(u.verified).toBe(true);
+    await rejects(u.bytes(), "HASH_MISMATCH");
+    for (const uri of [`decdn:${blob}`, `decdn:${bundle.hash}/a.txt`]) {
+      const r = await c.get(uri);
+      expect(r.verified).toBe(true);
+      await rejects(r.bytes(), "TRUNCATED");
+    }
   });
 
   it("fails a body the gateway cuts with TRUNCATED", async () => {
@@ -564,6 +569,27 @@ describe("public context", () => {
       contentType: "text/plain; charset=utf-8",
     });
     expect(fake.seen.map((s) => s.method)).toEqual(["HEAD"]);
+  });
+
+  it("reads a raw blob's size and hash from HEAD", async () => {
+    const { fake, blob } = publicFake();
+    const c = await open(fake);
+    expect(await c.head(`decdn:${blob}`)).toEqual({
+      size: 11,
+      hash: blob,
+      contentType: "application/octet-stream",
+    });
+    expect(fake.seen.map((s) => s.method)).toEqual(["HEAD"]);
+  });
+
+  it("maps a raw blob's HEAD refusals as its GET's", async () => {
+    const { fake, blob } = publicFake(0);
+    const c = await open(fake);
+    await rejects(c.head(`decdn:${blob}`), "PAYMENT_REQUIRED");
+    const funded = publicFake();
+    funded.fake.unfunded.add(funded.blob);
+    const d = await open(funded.fake);
+    await rejects(d.head(`decdn:${funded.blob}`), "POOL_UNFUNDED");
   });
 
   it("serves a bundle as its site index, unverified", async () => {

@@ -129,6 +129,8 @@ function window(
 
 /** The largest API body the gateway reads (64 KiB). */
 const MAX_BODY = 64 * 1024;
+/** What a raw blob's size proof spends of the allowance: one chunk group. */
+const PROOF_BYTES = 16 * 1024;
 
 /** A capability registered for a loopback delegate. */
 interface Registered {
@@ -158,6 +160,8 @@ export class FakeGateway {
   host: string;
   readonly token: string;
   readonly blobs = new Map<string, Uint8Array>();
+  /** The raw blobs whose size a proof here proved. */
+  private readonly proven = new Set<string>();
   /** Hashes whose pull the pool cannot pay: 503. */
   readonly unfunded = new Set<string>();
   /** Hashes served with one byte flipped. */
@@ -432,15 +436,7 @@ export class FakeGateway {
         });
       }
       if (this.mode === "loopback") return text(401, "token required\n");
-      if (req.method === "HEAD") {
-        return new Response(null, {
-          headers: {
-            "content-type": "application/octet-stream",
-            etag: `"${uri.hash}"`,
-            "x-content-type-options": "nosniff",
-          },
-        });
-      }
+      if (req.method === "HEAD") return this.headBlob(uri);
       return this.serve(uri, "bare", req.headers.get("range"));
     }
     const pageHost = req.headers.get("x-decdn-host");
@@ -760,6 +756,51 @@ export class FakeGateway {
     return Math.ceil(86400 - (now % 86400));
   }
 
+  /**
+   * `HEAD` of a raw blob on a public gateway: free for a blob whose size is
+   * proven, else refused or failed as its `GET` would be before it pays for
+   * the size proof.
+   */
+  private headBlob(uri: DecdnUri): Response {
+    const headers: Record<string, string> = {
+      "content-type": "application/octet-stream",
+      etag: `"${uri.hash}"`,
+      "x-content-type-options": "nosniff",
+    };
+    const bytes = this.blobs.get(uri.hash);
+    if (!this.proven.has(uri.hash)) {
+      if (this.allowance <= 0) {
+        return this.refusal(
+          402,
+          uri,
+          this.secondsToMidnight(),
+          "the gateway's allowance is spent for today",
+        );
+      }
+      if (this.unfunded.has(uri.hash))
+        return this.refusal(
+          503,
+          uri,
+          60,
+          "the gateway's pool cannot pay right now",
+        );
+      if (bytes === undefined) return text(404, "not found\n");
+      this.prove(uri.hash);
+    }
+    if (bytes !== undefined) {
+      headers["content-length"] = String(bytes.length);
+      headers["accept-ranges"] = "bytes";
+    }
+    return new Response(null, { headers });
+  }
+
+  /** Pay for the size proof of the raw blob `hash`, once. */
+  private prove(hash: string): void {
+    if (this.proven.has(hash)) return;
+    this.charge(PROOF_BYTES);
+    this.proven.add(hash);
+  }
+
   private async serve(
     uri: DecdnUri,
     present: "bare" | "site",
@@ -781,13 +822,14 @@ export class FakeGateway {
         "the gateway's pool cannot pay right now",
       );
     if (uri.kind === "blob") {
+      // The gateway proves a raw blob's size before it answers (one chunk
+      // group of the allowance, once), so a raw blob answers as a sized
+      // entry does.
       const bytes = this.blobs.get(uri.hash);
       if (bytes === undefined) return text(404, "not found\n");
-      return this.body(uri.hash, bytes, 200, {
-        "content-type":
-          present === "bare"
-            ? "application/octet-stream"
-            : "application/octet-stream",
+      this.prove(uri.hash);
+      return this.sized(uri, uri.hash, bytes, bytes.length, range, {
+        "content-type": "application/octet-stream",
         "content-disposition": `inline; filename="${uri.hash}"`,
         "x-content-type-options": "nosniff",
       });
@@ -850,34 +892,44 @@ export class FakeGateway {
     }
     if (entry.size === undefined)
       return this.body(entry.hash, bytes, 200, headers);
-    if (this.mode === "public" && entry.size > this.allowance) {
+    return this.sized(uri, entry.hash, bytes, entry.size, range, headers);
+  }
+
+  /**
+   * The answer for `bytes` of known `size`: on a public gateway refused with
+   * 402 when it does not fit what is left of the allowance, else whole with
+   * its length, or one `range` as 206 (416 past the end).
+   */
+  private sized(
+    uri: DecdnUri,
+    hash: string,
+    bytes: Uint8Array,
+    size: number,
+    range: string | null,
+    headers: Record<string, string>,
+  ): Response {
+    if (this.mode === "public" && size > this.allowance) {
       return this.refusal(
         402,
         uri,
         0,
-        "the entry does not fit what is left of the gateway's allowance today",
+        "the response does not fit what is left of the gateway's allowance today",
       );
     }
     headers["accept-ranges"] = "bytes";
-    const w = window(range, entry.size);
+    const w = window(range, size);
     if (w === "unsatisfiable")
       return text(416, "range not satisfiable\n", {
-        "content-range": `bytes */${entry.size}`,
+        "content-range": `bytes */${size}`,
       });
     if (w === undefined) {
-      headers["content-length"] = String(entry.size);
-      return this.body(entry.hash, bytes, 200, headers);
+      headers["content-length"] = String(size);
+      return this.body(hash, bytes, 200, headers);
     }
     const [offset, len] = w;
     headers["content-length"] = String(len);
-    headers["content-range"] =
-      `bytes ${offset}-${offset + len - 1}/${entry.size}`;
-    return this.body(
-      entry.hash,
-      bytes.subarray(offset, offset + len),
-      206,
-      headers,
-    );
+    headers["content-range"] = `bytes ${offset}-${offset + len - 1}/${size}`;
+    return this.body(hash, bytes.subarray(offset, offset + len), 206, headers);
   }
 
   private charge(n: number): void {
