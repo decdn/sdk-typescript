@@ -19,7 +19,7 @@ jobs:
   # Lint, unit, script and contract tests (against the fake gateway), the
   # build, and both entry points loaded by package name. 20.19 is the floor
   # `engines` names. The real-gateway contract runs are decdn's `SDK contract`
-  # workflow and this repo's `Release gateways` workflow.
+  # workflow and `release-gateways` below.
   test:
     name: test (node ${{ matrix.node }})
     runs-on: ubuntu-latest
@@ -115,14 +115,53 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - run: shellcheck scripts/*.sh
 
-  # The single required check.
+  # Whether a PR changes what the release-gateway run tests: the SDK, the
+  # contract suite and the fake, the dependencies, or how the run is made.
+  changes:
+    name: changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      gateway: ${{ steps.files.outputs.gateway }}
+    steps:
+      - id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
+          pattern='^(src/|test/contract/|test/support/|test/fake-gateway\.ts$|package\.json$|pnpm-lock\.yaml$|KEYS$|scripts/decdn-contract\.sh$|\.github/workflows/(ci|gateway-releases)\.yml$)'
+          if grep -qE "$pattern" <<<"$files"; then
+            echo "gateway=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "gateway=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The contract suite against the floor and the latest decdn release, with
+  # their signed binaries (.github/workflows/gateway-releases.yml).
+  release-gateways:
+    name: release gateways
+    needs: changes
+    if: needs.changes.outputs.gateway == 'true'
+    permissions:
+      contents: read
+    # `./`, not zizmor's `$/`: actionlint does not parse `$/` yet.
+    uses: ./.github/workflows/gateway-releases.yml # zizmor: ignore[self-repository]
+
+  # The single required check. A PR that leaves the release-gateway run's
+  # inputs alone, and a push to main, skip it.
   ci-success:
     name: CI success
     if: always()
-    needs: [test, browser, package, lint-ci]
+    needs: [test, browser, package, lint-ci, changes, release-gateways]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: re-actors/alls-green@release/v1
         with:
+          allowed-skips: changes, release-gateways
           jobs: ${{ toJSON(needs) }}

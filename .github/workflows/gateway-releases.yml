@@ -5,20 +5,16 @@ name: Release gateways
 # through decdn's own harness at that tag with the release's signed binaries
 # (scripts/decdn-contract.sh). decdn's `SDK contract` workflow checks decdn's
 # changes against this repo; this one checks this repo's changes against what
-# users run. A dispatch can add any decdn ref, built from source.
+# users run. CI calls it on a PR that changes the SDK, the suite or the fake,
+# and `CI success` requires it. A dispatch can add any decdn ref, built from
+# source.
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - "src/**"
-      - "test/contract/**"
-      - "test/fake-gateway.ts"
-      - "test/support/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "KEYS"
-      - "scripts/decdn-contract.sh"
-      - ".github/workflows/gateway-releases.yml"
+  workflow_call:
+    inputs:
+      decdn_ref:
+        description: A decdn branch, tag or commit to test too, built from source
+        required: false
+        type: string
   # Weekly, so a new decdn release is tested without waiting for a change here.
   schedule:
     - cron: "17 6 * * 1"
@@ -37,14 +33,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Which decdn gateways to test: the floor and the latest release, each only
-  # once a release carries the contract harness, plus a dispatched ref.
+  # Which decdn gateways to test: the floor and the latest release (one entry
+  # when they are the same), plus a dispatched ref.
   resolve:
     name: resolve gateways
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
-      any: ${{ steps.matrix.outputs.any }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -58,24 +53,17 @@ jobs:
           latest=$(gh api repos/decdn/decdn/releases/latest --jq .tag_name)
           entries='[]'
           for tag in $(printf '%s\n' "$floor" "$latest" | sort -u); do
-            if gh api "repos/decdn/decdn/contents/crates/e2e/tests/gateway_sdk.rs?ref=$tag" \
-                 --silent 2>/dev/null; then
-              entries=$(jq -c --arg t "$tag" '. + [{mode: "tag", target: $t}]' <<<"$entries")
-            else
-              echo "::notice::decdn $tag carries no contract harness yet (it ships from the release after v0.2.0); not tested"
-            fi
+            entries=$(jq -c --arg t "$tag" '. + [{mode: "tag", target: $t}]' <<<"$entries")
           done
           if [[ -n "$DECDN_REF" ]]; then
             entries=$(jq -c --arg r "$DECDN_REF" '. + [{mode: "ref", target: $r}]' <<<"$entries")
           fi
           echo "matrix=$entries" >> "$GITHUB_OUTPUT"
-          echo "any=$(jq 'length > 0' <<<"$entries")" >> "$GITHUB_OUTPUT"
           echo "gateways: $entries"
 
   contract:
     name: contract (decdn ${{ matrix.target }})
     needs: resolve
-    if: needs.resolve.outputs.any == 'true'
     runs-on: ubuntu-latest
     # A cold run builds decdn's e2e harness (a ref also builds `decdn` and
     # `decdn-node`) and runs two contract journeys at the 600s heavy tier.
