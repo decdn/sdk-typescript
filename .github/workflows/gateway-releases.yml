@@ -79,14 +79,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Free disk space
-        run: |
-          sudo rm -rf /opt/hostedtoolcache/CodeQL \
-                      /usr/local/lib/android \
-                      /usr/share/dotnet \
-                      /opt/ghc \
-                      /usr/local/.ghcup
-          df -h /
       - uses: dtolnay/rust-toolchain@1.99.1
       - uses: rui314/setup-mold@v1
         with:
