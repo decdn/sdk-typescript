@@ -14,6 +14,7 @@ Node.js 20.19+ and pnpm (`corepack enable`, or the version in
 pnpm install --frozen-lockfile
 pnpm lint            # eslint, prettier --check, tsc --noEmit
 pnpm test            # unit tests, script tests, contract suite against the fake gateway
+pnpm test:coverage   # the same, with coverage of src/ (report in coverage/)
 pnpm build           # dist/: ESM + CJS bundles and declarations
 pnpm exec playwright install chromium-headless-shell
 pnpm test:browser    # Chromium smoke run against the fake gateway
@@ -39,12 +40,13 @@ skips them for one commit, and `HUSKY=0 pnpm install` installs without them.
 
 `CI success` gates a merge. It needs every job in `.github/workflows/ci.yml`:
 
-| Job       | What it runs                                                                                           | Locally                                                             |
-| --------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| `test`    | lint, tests and build on Node 20.19 (the `engines` floor), 22, 24 and 26, then loads both entry points | `pnpm lint && pnpm test && pnpm build`                              |
-| `browser` | the Chromium smoke                                                                                     | `pnpm test:browser`                                                 |
-| `package` | publint and arethetypeswrong on the packed package                                                     | `pnpm build && scripts/check-package.sh`                            |
-| `lint-ci` | actionlint, zizmor (policy in `.github/zizmor.yml`) and shellcheck                                     | `actionlint && zizmor .github/workflows && shellcheck scripts/*.sh` |
+| Job        | What it runs                                                                                                                               | Locally                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `test`     | lint, tests and build on Node 20.19 (the `engines` floor), 22, 24 and 26, then loads both entry points                                     | `pnpm lint && pnpm test && pnpm build`                              |
+| `browser`  | the Chromium smoke                                                                                                                         | `pnpm test:browser`                                                 |
+| `package`  | publint and arethetypeswrong on the packed package                                                                                         | `pnpm build && scripts/check-package.sh`                            |
+| `coverage` | `pnpm test` with coverage of `src/`, failing below the thresholds in `vitest.config.ts`; posts the Cobertura report to GitHub Code Quality | `pnpm test:coverage`                                                |
+| `lint-ci`  | actionlint, zizmor (policy in `.github/zizmor.yml`) and shellcheck                                                                         | `actionlint && zizmor .github/workflows && shellcheck scripts/*.sh` |
 
 Separate workflows check the PR title (`PR title`), run CodeQL on the
 TypeScript and the workflows (`CodeQL`), and run the contract suite against

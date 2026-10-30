@@ -65,6 +65,7 @@
     "lint": "eslint . && prettier --check . && tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run --project unit --project contract",
+    "test:coverage": "vitest run --coverage --project unit --project contract",
     "test:contract": "vitest run --project contract",
     "test:browser": "vitest run --project browser",
     "prepare": "husky"
@@ -94,6 +95,7 @@
     "@eslint/js": "^9.39.0",
     "@types/node": "^24",
     "@vitest/browser-playwright": "^5.0.5",
+    "@vitest/coverage-v8": "^5.0.5",
     "esbuild": "^0.28.2",
     "eslint": "^9.39.0",
     "eslint-config-prettier": "^10.1.8",
