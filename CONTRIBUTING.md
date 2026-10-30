@@ -20,7 +20,10 @@ pnpm test:browser    # Chromium smoke run against the fake gateway
 ```
 
 Commits and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/).
-A user-visible change adds a `CHANGELOG.md` entry by hand.
+PRs are squash-merged with the PR title as the commit subject, and
+`scripts/release.sh` renders those subjects into `CHANGELOG.md` with git-cliff
+at release (see [RELEASING.md](RELEASING.md)): write a title a user can read as
+a changelog entry. Never edit `CHANGELOG.md` by hand.
 
 `pnpm install` also installs git hooks (husky). `pre-commit` fixes the staged
 files in place with `eslint --fix` and `prettier --write` (lint-staged,

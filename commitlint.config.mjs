@@ -1,6 +1,7 @@
-// The same types as the PR title check (.github/workflows/pr-title.yml):
-// branch commits reach main as they are on a rebase merge, and as the squash
-// subject of a single-commit PR. Keep the two lists in step. No case rule,
+// The same types as the PR title check (.github/workflows/pr-title.yml) and
+// cliff.toml's parsers: PRs are squash-merged with the PR title as the
+// subject, which scripts/release.sh renders into CHANGELOG.md. Keep the lists
+// in step. No case rule,
 // since a subject can start with a name (`README`, `DecdnClient`), and no
 // length limits: headers run long, and body paragraphs and trailers are not
 // wrapped.

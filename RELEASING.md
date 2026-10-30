@@ -22,22 +22,83 @@ a key added or revoked there is added or revoked here in the same sitting.
 
 ## Cutting a version
 
-1. In a PR, set `version` in `package.json`, add the `CHANGELOG.md` entry, and
-   check the README's minimum gateway release (see below). Merge it with CI
-   green.
-2. From `main`, tag that commit **signed** and push the tag:
+A version is cut on `main`, with no release PR, by
+[`scripts/release.sh`](scripts/release.sh), a wrapper around `pnpm version` and
+[git-cliff](https://git-cliff.org) in the manner of `cargo release`. Publishing
+is the separate step after it:
 
-   ```bash
-   git tag -s v0.1.0 -m "@decdn/client 0.1.0"
-   git push origin v0.1.0
-   ```
+```bash
+scripts/release.sh                    # dry run: the new tag and the diff
+scripts/release.sh --execute          # bump, changelog, check, commit, tag, push
+DECDN_NPM_DRY_RUN=1 scripts/publish.sh v0.2.0   # rehearse
+scripts/publish.sh v0.2.0                       # publish
+```
 
-3. Rehearse, then publish:
+The argument is the level: `auto` (the default), `patch`, `minor`, `major` or
+an explicit `X.Y.Z`. Without `--execute`, `release.sh` prints the new tag and
+the diff it would commit, and changes no file. It:
 
-   ```bash
-   DECDN_NPM_DRY_RUN=1 scripts/publish.sh v0.1.0
-   scripts/publish.sh v0.1.0
-   ```
+1. **Checks the tree and the floor.** It runs on a clean `main` equal to
+   `origin/main`, with no local `v*` tag above origin's highest, and refuses
+   unless the decdn release `decdn.gatewayFloor` names is published (see
+   below).
+2. **Refuses unconventional commits.** git-cliff drops a commit it cannot parse
+   as a Conventional Commit, from the changelog and from the bump, and only
+   logs a count: an unconventional subject, but also an empty scope
+   (`feat(): …`) and a body right under the subject with no blank line. The
+   script has git-cliff name every such commit since the last tag
+   (`require_conventional`) and stops; `--allow-unconventional` releases
+   without them.
+3. **Picks the version.** `auto` is the bump git-cliff derives (`cliff.toml`)
+   from the commits since the last tag. Before 1.0, a feature bumps the minor,
+   and so does a breaking change from 0.1 on (at 0.0.x it bumps the patch); any
+   other commit kept in the changelog bumps the patch. It refuses when none of
+   them makes a changelog entry, whatever the level.
+4. **Writes the changelog section.** It renders the same commits into a dated
+   `## [X.Y.Z] — YYYY-MM-DD` section at the top of `CHANGELOG.md`, formatted by
+   prettier: `feat` under Added, `fix` under Fixed, `revert` under Removed,
+   `security` under Security, and `perf`, `refactor`, `docs`, `chore` and any
+   other type under Changed. `ci`, `test`, `style` and `build` commits are left
+   out unless breaking (those go under Changed); release commits always are. A
+   breaking commit (`!` or a `BREAKING CHANGE:` footer) starts with
+   **Breaking:**. An entry is the subject without its type, the scope in bold
+   and the first letter capitalised: `fix(site): keep the query (#12)` becomes
+   `- **site**: Keep the query (#12)`. PRs are squash-merged with the PR title
+   as the subject, so the PR title is the changelog entry.
+5. **Bumps and checks** (`--execute` only): `pnpm version X.Y.Z
+--no-git-tag-version`, then `pnpm lint`, `pnpm test`, `pnpm build` and
+   `scripts/check-package.sh` (`--no-verify` skips the checks).
+6. **Commits** (`--execute` only) `chore(release): vX.Y.Z` and tags `vX.Y.Z`
+   (`@decdn/client X.Y.Z`), both signed, and pushes them with
+   `git push --atomic origin main vX.Y.Z`: origin gets both or neither. If a
+   check or the commit fails, the files are restored and nothing is committed.
+   If tagging or the push fails, or the script is stopped after the commit, it
+   says whether origin got anything and how to undo. A refusal never touches
+   the working tree.
+
+**Prerequisites.**
+
+- [git-cliff](https://git-cliff.org) 2.9 or later, for `require_conventional`
+  (`cargo install git-cliff`; CI tests with 2.14.1), and `gh`, logged in.
+- Git configured to sign, with `user.signingkey` set to a key in `KEYS`. The
+  script signs a throwaway commit object first, so a key that cannot sign fails
+  before the checks.
+- A bypass of the `main` ruleset (an org admin), because the release commit
+  goes straight to `main`: its pull-request rule and its required status checks
+  both apply to a direct push.
+- CI green on the commit, and a green `Release gateways` run (see below).
+
+**The first release.** `package.json` starts at the `0.0.0` placeholder, and
+the first release names its level: `scripts/release.sh minor --execute` cuts
+`0.1.0`. Without a tag, git-cliff would render the whole history, so the first
+release does not use it: it renames the changelog's hand-written
+`## [Unreleased]` section to the dated version instead. After that, no
+`[Unreleased]` section is kept: the script refuses one, because every later
+section is generated.
+
+**A prerelease** (`v0.2.0-rc.1`) is not cut by `release.sh`: set `version` in a
+PR, then tag the merged commit by hand with `git tag -s` and push the tag. Its
+commits fall into the next release's generated section.
 
 `publish.sh` refuses a tag that is not `v<semver>`, verifies the tag against
 `KEYS` (and against `DECDN_SIGNING_KEY` when set) and against `origin`, checks

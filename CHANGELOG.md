@@ -1,7 +1,9 @@
 # Changelog
 
-All notable changes to `@decdn/client` are documented in this file, one entry
-per PR. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+All notable changes to `@decdn/client` are documented in this file. Each
+release's section is generated from the conventional PR titles by
+`scripts/release.sh` (git-cliff); the first release's was written by hand. The
+format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the package follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]

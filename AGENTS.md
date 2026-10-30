@@ -47,6 +47,9 @@ pnpm test:browser    # Chromium smoke (needs playwright's chromium-headless-shel
 - **Present tense.** Comments and docs describe what the code does, not its
   history.
 - **Conventional commits** (commitlint checks commit messages in the
-  `commit-msg` hook; `.github/workflows/pr-title.yml` checks PR titles), a
-  hand-written `CHANGELOG.md` entry per user-visible PR, releases per
-  RELEASING.md (signed `v*` tags, local publish, no npm token in CI).
+  `commit-msg` hook; `.github/workflows/pr-title.yml` checks PR titles). PRs
+  are squash-merged, so the PR title is the changelog entry:
+  `scripts/release.sh` renders `CHANGELOG.md` sections with git-cliff
+  (`cliff.toml`). Never edit `CHANGELOG.md` by hand or add an `[Unreleased]`
+  section. Releases per RELEASING.md (`scripts/release.sh` cuts the signed
+  `v*` tag on `main`; local publish, no npm token in CI).
