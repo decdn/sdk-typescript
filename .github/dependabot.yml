@@ -67,3 +67,8 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    ignore:
+      # The release-gateway run's toolchain is the one decdn's
+      # rust-toolchain.toml names at the floor tag; bump it by hand with the
+      # floor.
+      - dependency-name: "dtolnay/rust-toolchain"
