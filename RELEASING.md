@@ -40,7 +40,7 @@ an explicit `X.Y.Z`. Without `--execute`, `release.sh` prints the new tag and
 the diff it would commit, and changes no file. It:
 
 1. **Checks the tree, the key and the floor.** It runs on a clean `main` equal
-   to `origin/main`, with no local `vX.Y.Z` tag above origin's highest, and
+   to `origin/main`, with every local `vX.Y.Z` tag on origin, and
    `package.json` at the last release's version. With `--execute`, it signs a
    throwaway commit and verifies it against `KEYS` alone, as `publish.sh`
    verifies the tag. It refuses unless the decdn release `decdn.gatewayFloor`

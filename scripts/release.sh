@@ -146,15 +146,19 @@ ver_gt() { [[ "$1" != "$2" && "$(printf '%s\n' "$1" "$2" | sort -V | tail -n1)" 
 tag_re="^${prefix}[0-9]+\.[0-9]+\.[0-9]+$"
 # <tag names on stdin>: the highest X.Y.Z among the release tags, or nothing.
 highest() { { grep -E "$tag_re" || (($? == 1)); } | sed "s/^$prefix//" | sort -V | tail -n1; }
-# The last release is origin's highest tag. A different local one (a tag left
-# by a failed push, say) would move git-cliff's boundary, so it is refused.
-remote_tags="$(git ls-remote --tags --refs origin "refs/tags/${prefix}*")" || die "git ls-remote origin failed"
-remote_tags="$(awk '{sub(/^refs\/tags\//, "", $2); print $2}' <<<"$remote_tags")"
-local_tags="$(git tag --list "${prefix}*")" || die "git tag failed"
+# The last release is origin's highest tag. git-cliff's boundary is the nearest
+# release tag in the history, so every local one must be origin's, the same
+# tag object: a stray one (left by a failed push, say), even below origin's
+# highest, would move the boundary.
+remote_refs="$(git ls-remote --tags --refs origin "refs/tags/${prefix}*")" || die "git ls-remote origin failed"
+remote_refs="$(awk '{sub(/^refs\/tags\//, "", $2); print $1, $2}' <<<"$remote_refs")"
+local_refs="$(git for-each-ref --format='%(objectname) %(refname:short)' "refs/tags/${prefix}*")" || die "git for-each-ref failed"
+remote_tags="$(awk '{print $2}' <<<"$remote_refs")"
 prev="$(highest <<<"$remote_tags")"
-local_prev="$(highest <<<"$local_tags")"
-[[ "$local_prev" == "$prev" ]] \
-  || die "the highest local tag, $prefix${local_prev:-?}, is not origin's (${prev:+$prefix}${prev:-none}): delete it with git tag -d"
+stray="$(awk -v re="$tag_re" 'NR == FNR {seen[$0]; next} $2 ~ re && !($0 in seen) {print $2}' \
+  <(printf '%s\n' "$remote_refs") <(printf '%s\n' "$local_refs"))"
+[[ -z "$stray" ]] \
+  || die "local tags not on origin, or not origin's: $(xargs <<<"$stray"). Delete them with git tag -d (git fetch --tags then brings back origin's)"
 today="$(date -u +%F)"
 
 # --- version and section -----------------------------------------------------

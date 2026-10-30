@@ -538,14 +538,29 @@ describe.skipIf(MISSING.length > 0 && !process.env.CI)(
         expect(r.stderr).toContain("fix the manifest first");
       });
 
-      it("refuses a local tag above origin's", () => {
+      // A stray tag on a newer commit, below origin's highest or above it,
+      // would move git-cliff's boundary.
+      it.each(["v0.0.9", "v0.9.0"])(
+        "refuses a local tag %s origin does not have",
+        (tag) => {
+          commit("src/a.ts", "fix: a fix");
+          git("tag", tag);
+          commit("src/b.ts", "fix: another fix");
+          const r = release("0.2.0");
+          expect(r.status).toBe(1);
+          expect(r.stderr).toContain(
+            `local tags not on origin, or not origin's: ${tag}.`,
+          );
+        },
+      );
+
+      it("takes a tag that is not a release tag", () => {
         commit("src/a.ts", "fix: a fix");
-        git("tag", "v0.9.0");
+        git("tag", "v0.2.0-rc.1");
+        git("tag", "vendor-snapshot");
         const r = release();
-        expect(r.status).toBe(1);
-        expect(r.stderr).toContain(
-          "the highest local tag, v0.9.0, is not origin's (v0.1.0)",
-        );
+        expect(r.status, r.stderr).toBe(0);
+        expect(r.stdout).toContain("v0.1.0 -> v0.1.1");
       });
 
       it("pushes all or nothing, and its undo works", () => {
