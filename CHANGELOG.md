@@ -6,7 +6,7 @@ commit subjects on `main`, the squash-merged PR titles; the first release's
 section is hand-written. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the package follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.0] — 2026-10-30
 
 ### Added
 
