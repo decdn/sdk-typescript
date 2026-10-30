@@ -116,7 +116,8 @@ jobs:
       - run: shellcheck scripts/*.sh
 
   # Whether a PR changes what the release-gateway run tests: the SDK, the
-  # contract suite and the fake, the dependencies, or how the run is made.
+  # contract suite, its vitest project and the fake, the dependencies, or how
+  # the run is made. A rename counts by both its paths.
   changes:
     name: changes
     if: github.event_name == 'pull_request'
@@ -133,8 +134,8 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
-          pattern='^(src/|test/contract/|test/support/|test/fake-gateway\.ts$|package\.json$|pnpm-lock\.yaml$|KEYS$|scripts/decdn-contract\.sh$|\.github/workflows/(ci|gateway-releases)\.yml$)'
+          files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)')
+          pattern='^(src/|test/contract/|test/support/|test/fake-gateway\.ts$|vitest\.config\.ts$|package\.json$|pnpm-lock\.yaml$|KEYS$|scripts/decdn-contract\.sh$|\.github/workflows/(ci|gateway-releases)\.yml$)'
           if grep -qE "$pattern" <<<"$files"; then
             echo "gateway=true" >> "$GITHUB_OUTPUT"
           else

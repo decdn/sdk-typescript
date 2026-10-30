@@ -71,12 +71,11 @@ The fixtures in `test/fixtures` are pinned on the Rust side too
 The `Release gateways` workflow (`.github/workflows/gateway-releases.yml`)
 runs the contract suite against released decdn gateways: the floor in
 `package.json` (`decdn.gatewayFloor`) and the latest release. CI runs it on a
-PR that changes the SDK, the suite, the fake, the dependencies or the script,
-and `CI success` requires it to pass. It also runs weekly, and on dispatch,
-where a decdn branch or commit can be added. Its Rust toolchain is the one
-decdn's `rust-toolchain.toml` names at the floor; move it with the floor.
-Each run goes through
-`scripts/decdn-contract.sh`, which you can run locally on Linux x86_64, with
+PR that changes the SDK, the suite or its vitest config, the fake, the
+dependencies or the script, and `CI success` requires it to pass. It also runs
+weekly, and on dispatch, where a decdn branch or commit can be added. Its Rust
+toolchain is the one decdn's `rust-toolchain.toml` names at the floor; move it
+with the floor. Each run goes through `scripts/decdn-contract.sh`, which you can run locally on Linux x86_64, with
 `git`, `gpg`, `curl`, `cargo`, `cargo-nextest`, `anvil` and `forge` on `PATH`:
 
 ```bash
