@@ -7,7 +7,8 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       reporter: ["text", "html", "cobertura"],
-      // Today's coverage, floored: a change that drops below it fails.
+      // Floors under the current coverage: a change that drops below one
+      // fails. Raise them as coverage rises.
       thresholds: { statements: 93, branches: 86, functions: 94, lines: 96 },
     },
     projects: [

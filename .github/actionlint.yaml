@@ -1,5 +1,5 @@
-# actionlint 1.7.12 predates the `code-quality` permission scope that
-# actions/upload-code-coverage needs.
+# actionlint does not know the `code-quality` permission scope that
+# actions/upload-code-coverage needs (ci.yml's `coverage` job).
 paths:
   .github/workflows/ci.yml:
     ignore:
