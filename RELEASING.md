@@ -1,7 +1,8 @@
 # Releasing @decdn/client
 
 Releases are cut locally by `scripts/release.sh` and published from its signed
-tag by `scripts/publish.sh`. CI builds and tests, but holds no
+tag by `scripts/publish.sh`, which uploads to npm and makes the GitHub
+release. CI builds and tests, but holds no
 npm token and publishes nothing: a `push`-triggered workflow runs the workflow
 definition from the pushed ref, so a token reachable from a workflow would be
 reachable from any tag anyone with push access could craft.
@@ -15,7 +16,9 @@ npm gives a scoped name to whoever owns the scope. Before the first release,
 confirm that the `decdn` npm organisation exists and owns the `@decdn` scope,
 and that you are a member with publish rights to it (`npm org ls decdn`). Add
 a second maintainer, so the package outlives one account. Log in with
-`npm login`; `publish.sh` uses that session.
+`npm login` and `gh auth login`; `publish.sh` uses both sessions, and the gh
+account needs write access to `decdn/sdk-typescript` to make the GitHub
+release.
 
 `KEYS` holds the maintainer keys a release tag may be signed by. It is a
 verbatim copy of [decdn's `KEYS`](https://github.com/decdn/decdn/blob/main/KEYS):
@@ -31,8 +34,8 @@ is the separate step after it:
 ```bash
 scripts/release.sh                    # dry run: the new tag and the diff
 scripts/release.sh --execute          # bump, changelog, check, commit, tag, push
-DECDN_NPM_DRY_RUN=1 scripts/publish.sh v0.2.0   # rehearse
-scripts/publish.sh v0.2.0                       # publish
+DECDN_NPM_DRY_RUN=1 scripts/publish.sh v0.2.0   # rehearse, print the notes
+scripts/publish.sh v0.2.0                       # npm, then GitHub release
 ```
 
 The argument is the level: `auto` (the default), `patch`, `minor`, `major` or
@@ -117,15 +120,24 @@ prerelease fall into the next release's generated section.
 
 `publish.sh` refuses a tag that is not `v<semver>`, verifies the tag against
 `KEYS` (and against `DECDN_SIGNING_KEY` when set) and against `origin`, checks
-the tag out into a detached worktree, checks that `package.json` names
-`@decdn/client` at the tag's version, and runs install, lint, tests and the
-build there before `pnpm publish --access public`. A prerelease
-(`v0.2.0-rc.1`) goes to the `next` dist-tag, so a plain install keeps the
-latest release.
+that gh's account can write to `decdn/sdk-typescript`, checks the tag out into
+a detached worktree, checks that `package.json` names `@decdn/client` at the
+tag's version and that `CHANGELOG.md` has its section, and runs install,
+lint, tests and the build there before `pnpm publish --access public`. It
+then makes the tag's GitHub release, titled with the tag, its notes the tag's
+`CHANGELOG.md` section followed by the npm link and the gateway floor
+(`decdn.gatewayFloor`). A prerelease (`v0.2.0-rc.1`) goes to the `next`
+dist-tag, so a plain install keeps the latest release; its GitHub release is a
+prerelease, never the latest, and with no changelog section its notes are the
+npm link and floor alone. A draft release for the tag stops the script before
+the upload: publish or delete it first.
 
-**Publishing is not re-runnable.** An npm version is immutable: it can never be
+**An npm version is published once.** It is immutable: it can never be
 published again, even after `npm unpublish`. A broken release is fixed by the
-next patch version and `npm deprecate` on the broken one.
+next patch version and `npm deprecate` on the broken one. Running
+`publish.sh` again skips the upload when npm has the version and the GitHub
+release when it exists, so it finishes a run whose GitHub step failed; an
+existing release's notes are left as they are.
 
 ## The minimum gateway release
 
