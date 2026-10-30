@@ -61,6 +61,52 @@ jobs:
           node -e 'require("@decdn/client"); require("@decdn/client/node")'
           node --input-type=module -e 'await import("@decdn/client"); await import("@decdn/client/node")'
 
+  # The unit, script and contract tests with coverage of src/. The run fails
+  # below the thresholds in vitest.config.ts; the upload after it is
+  # best-effort, so a GitHub API failure never blocks a PR.
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # `Upload code coverage` posts the Cobertura report to GitHub Code Quality.
+      code-quality: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      # The script tests skip without git-cliff; see the `test` job.
+      - name: Install git-cliff
+        env:
+          GIT_CLIFF_VERSION: 2.14.1
+          GIT_CLIFF_SHA256: dfe9bef0c7a00d05fafe78e6e591a1a280d39dd495b8066764db0a559acde67f
+        run: |
+          f="git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$f" "https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/$f"
+          echo "${GIT_CLIFF_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/git-cliff-${GIT_CLIFF_VERSION}" >> "$GITHUB_PATH"
+      - run: pnpm test:coverage
+      # GitHub Code Quality comments the PR coverage and per-file deltas
+      # against `main`. The action skips fork PRs by itself (their token is
+      # read-only).
+      - name: Upload code coverage
+        if: hashFiles('coverage/cobertura-coverage.xml') != ''
+        continue-on-error: true
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest
+          fail-on-error: false
+
   # The Chromium smoke. Only the headless shell is installed, without
   # `--with-deps`: the runner image ships Google Chrome and the libraries it
   # needs, and apt-installing Playwright's fonts and xvfb can take minutes.
@@ -171,7 +217,8 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [test, browser, package, lint-ci, changes, release-gateways]
+    needs:
+      [test, coverage, browser, package, lint-ci, changes, release-gateways]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
