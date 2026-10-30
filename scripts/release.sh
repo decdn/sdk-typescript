@@ -143,7 +143,7 @@ fi
 [[ "$draft" == "false" ]] || die "the gateway floor, decdn v$floor, is a draft release: publish it first"
 
 ver_gt() { [[ "$1" != "$2" && "$(printf '%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" ]]; }
-tag_re="^${prefix}[0-9]+\.[0-9]+\.[0-9]+$"
+tag_re="^${prefix}[0-9]+[.][0-9]+[.][0-9]+$"
 # <tag names on stdin>: the highest X.Y.Z among the release tags, or nothing.
 highest() { { grep -E "$tag_re" || (($? == 1)); } | sed "s/^$prefix//" | sort -V | tail -n1; }
 # The last release is origin's highest tag. git-cliff's boundary is the nearest
