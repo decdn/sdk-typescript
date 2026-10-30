@@ -1,7 +1,7 @@
 // The SDK against a loopback gateway with its token: the fake by default,
 // the real binary when decdn's contract run runs this file with
 // DECDN_CONTRACT:
-// https://github.com/decdn/decdn/blob/main/crates/e2e/tests/gateway_sdk.rs
+// https://github.com/decdn/decdn/blob/main/crates/e2e/src/sdk_contract.rs
 // The tests run in order: content is refused until the capability is
 // registered.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
