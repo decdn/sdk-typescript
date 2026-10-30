@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs this repo's contract suite against a real `decdn gateway`, through
-# decdn's own harness (`crates/e2e/tests/gateway_sdk.rs`), at a decdn release
+# decdn's own harness (`crates/e2e/src/sdk_contract.rs`, driven by the `gateway_sdk` test target), at a decdn release
 # tag or at any decdn ref.
 #
 #   --tag vX.Y.Z  decdn at that signed release tag, with the release's own

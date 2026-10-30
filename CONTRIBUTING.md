@@ -56,7 +56,7 @@ released gateways (`Release gateways`, below).
 bodies. The contract suite (`test/contract`) runs against it here, and
 against the real binary in two places: decdn's `SDK contract` workflow runs
 it at the commit decdn pins (`.github/sdk-typescript.sha` in decdn, through
-[`gateway_sdk.rs`](https://github.com/decdn/decdn/blob/main/crates/e2e/tests/gateway_sdk.rs)),
+[`sdk_contract.rs`](https://github.com/decdn/decdn/blob/main/crates/e2e/src/sdk_contract.rs)),
 and this repo's `Release gateways` workflow runs it against released decdn
 gateways (below). So:
 
