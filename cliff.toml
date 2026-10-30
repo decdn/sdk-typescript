@@ -1,6 +1,6 @@
 # git-cliff configuration for scripts/release.sh, which renders a release's
 # CHANGELOG.md section from the conventional commit subjects since the last
-# `v*` tag. The script passes --tag-pattern and writes the
+# `vX.Y.Z` tag. The script passes --tag-pattern and writes the
 # `## [X.Y.Z] — YYYY-MM-DD` heading itself: the body below renders only the
 # `### <Kind>` groups, each a Keep a Changelog kind, each entry one `- ` line.
 [changelog]

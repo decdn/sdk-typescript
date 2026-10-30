@@ -11,13 +11,15 @@
 #
 # Without --execute it is a dry run: it prints the new tag and the diff it would
 # commit, and changes no file. The level defaults to `auto`, the bump git-cliff
-# derives (cliff.toml) from the conventional commits since the last `v*` tag.
+# derives (cliff.toml) from the conventional commits since the last `vX.Y.Z`
+# tag.
 # Before 1.0, a feature (or, from 0.1 on, a breaking change) bumps the minor and
 # any other commit kept in the changelog bumps the patch. The section is
 # git-cliff's rendering of those commits, under a `## [X.Y.Z] — YYYY-MM-DD`
 # heading. A commit there that git-cliff cannot parse as a Conventional Commit
-# would be dropped without a word, so the script has git-cliff list them
-# (require_conventional) and refuses them unless --allow-unconventional.
+# would be dropped with only a count in git-cliff's log, so the script has
+# git-cliff list them (require_conventional) and refuses them unless
+# --allow-unconventional.
 #
 # The first release (no tag yet, package.json at the 0.0.0 placeholder) names
 # its level and releases the changelog's hand-written `## [Unreleased]` section
@@ -28,11 +30,12 @@
 # gateway does not ship (RELEASING.md).
 #
 # --execute runs `pnpm lint`, `pnpm test`, `pnpm build` and
-# scripts/check-package.sh on the result unless --no-verify: a tag that fails
-# its checks burns the version. If any of that or the commit fails, the files
+# scripts/check-package.sh on the result unless --no-verify, so a release that
+# fails them is never committed. If any of that or the commit fails, the files
 # are restored. Run it on an up-to-date, clean main, with git configured to sign
-# (user.signingkey), and with a bypass of the main ruleset (its PR rule and its
-# required status checks): the release commit goes straight to main.
+# with an OpenPGP key published in KEYS (user.signingkey; publish.sh verifies
+# the tag against KEYS), and with a bypass of the main ruleset: the release
+# commit goes straight to main.
 set -euo pipefail
 
 usage() {
@@ -56,7 +59,9 @@ done
 level="${level:-auto}"
 [[ "$level" =~ ^(auto|patch|minor|major|[0-9]+\.[0-9]+\.[0-9]+)$ ]] || usage
 
-for tool in git node pnpm gh; do
+tools=(git node pnpm gh)
+((execute == 0)) || tools+=(gpg)
+for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null || die "$tool not found on PATH"
 done
 
@@ -76,8 +81,8 @@ cleanup() {
   # exists puts them back. Nothing is restored before that: a refusal never
   # touches the maintainer's own edits.
   if ((written == 1 && committed == 0)); then
-    git checkout -q -- "${files[@]}" \
-      || echo "release: could not restore ${files[*]}: run git checkout -- ${files[*]}" >&2
+    git checkout -q HEAD -- "${files[@]}" \
+      || echo "release: could not restore ${files[*]}: run git checkout HEAD -- ${files[*]}" >&2
   fi
   # Stopped (Ctrl-C, say) between the release commit and the end of the push.
   if ((committed == 1 && pushed == 0 && reported == 0)); then
@@ -95,28 +100,47 @@ branch="$(git symbolic-ref --quiet --short HEAD || true)"
 status="$(git status --porcelain)" || die "git status failed"
 [[ -z "$status" ]] || die "the working tree is not clean (git status)"
 git fetch --quiet --tags origin main || die "git fetch origin failed"
-[[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] \
-  || die "main is not origin/main: pull or push first"
+head="$(git rev-parse HEAD)" || die "git rev-parse HEAD failed"
+upstream="$(git rev-parse origin/main)" || die "git rev-parse origin/main failed"
+[[ "$head" == "$upstream" ]] || die "main is not origin/main: pull or push first"
 if ((execute == 1)); then
-  [[ -n "$(git config user.signingkey || true)" ]] \
-    || die "git has no user.signingkey: the release commit and tag are signed"
-  # Sign a throwaway commit object now, not after the checks: an unusable key
-  # would otherwise fail only at the release commit.
-  git commit-tree -S -p HEAD -m "release.sh signing check" "HEAD^{tree}" >/dev/null 2>"$tmp/sign.err" \
+  signingkey="$(git config user.signingkey || true)"
+  [[ -n "$signingkey" ]] || die "git has no user.signingkey: the release commit and tag are signed"
+  format="$(git config gpg.format || true)"
+  [[ -z "$format" || "$format" == "openpgp" ]] \
+    || die "gpg.format is $format: publish.sh verifies the tag against KEYS, an OpenPGP keyring"
+  # Sign a throwaway commit object now, not after the checks, and verify it
+  # against KEYS alone, as publish.sh verifies the tag: a key that cannot sign,
+  # or one KEYS does not hold, would otherwise fail only after the push.
+  probe="$(git commit-tree -S -p HEAD -m "release.sh signing check" "HEAD^{tree}" 2>"$tmp/sign.err")" \
     || { cat "$tmp/sign.err" >&2; die "git cannot sign with user.signingkey"; }
+  [[ -f KEYS ]] || die "KEYS is missing"
+  mkdir -m 700 "$tmp/keys"
+  gpg --homedir "$tmp/keys" --batch --import KEYS >/dev/null 2>&1 || die "KEYS is not a valid OpenPGP keyring"
+  GNUPGHOME="$tmp/keys" git verify-commit "$probe" >/dev/null 2>&1 \
+    || die "user.signingkey ($signingkey) signs with a key that is not in KEYS: publish.sh would refuse the tag"
 fi
 
 # <key>: a string field of package.json, or nothing.
 pkg() { node -e 'const v = process.argv[1].split(".").reduce((o, k) => o?.[k], require("./package.json")); if (typeof v === "string") console.log(v)' "$1"; }
-[[ "$(pkg name)" == "@decdn/client" ]] || die "$manifest does not name @decdn/client"
-current="$(pkg version)"
-[[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "$manifest has version '${current}', not X.Y.Z"
-floor="$(pkg decdn.gatewayFloor)"
+name="$(pkg name)" || die "cannot read $manifest"
+[[ "$name" == "@decdn/client" ]] || die "$manifest does not name @decdn/client"
+current="$(pkg version)" || die "cannot read $manifest"
+[[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || die "$manifest has version '${current}', not X.Y.Z (after a prerelease, version goes back to the last release: RELEASING.md)"
+floor="$(pkg decdn.gatewayFloor)" || die "cannot read $manifest"
 [[ "$floor" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "$manifest has decdn.gatewayFloor '${floor}', not X.Y.Z"
-# A draft release is not published: its binaries are not signed yet.
-draft="$(GH_PROMPT_DISABLED=1 gh api "repos/decdn/decdn/releases/tags/v$floor" --jq .draft 2>/dev/null || true)"
-[[ "$draft" == "false" ]] \
-  || die "the gateway floor, decdn v$floor, is not a published release (gh api repos/decdn/decdn/releases/tags/v$floor): release decdn first or lower decdn.gatewayFloor"
+# GitHub answers a release by tag only once it is published; a draft is
+# refused all the same, should it ever be answered.
+rc=0
+draft="$(GH_PROMPT_DISABLED=1 gh api "repos/decdn/decdn/releases/tags/v$floor" --jq .draft 2>"$tmp/gh.err")" || rc=$?
+if ((rc != 0)); then
+  grep -q 'HTTP 404' "$tmp/gh.err" \
+    && die "the gateway floor, decdn v$floor, has no published release: release decdn v$floor first"
+  cat "$tmp/gh.err" >&2
+  die "could not ask GitHub for decdn v$floor's release (gh api failed: is gh logged in?)"
+fi
+[[ "$draft" == "false" ]] || die "the gateway floor, decdn v$floor, is a draft release: publish it first"
 
 ver_gt() { [[ "$1" != "$2" && "$(printf '%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" ]]; }
 tag_re="^${prefix}[0-9]+\.[0-9]+\.[0-9]+$"
@@ -134,6 +158,10 @@ local_prev="$(highest <<<"$local_tags")"
 today="$(date -u +%F)"
 
 # --- version and section -----------------------------------------------------
+# Keep a Changelog's link definitions would go stale: no section has one.
+! grep -q '^\[[^]]*\]: ' "$changelog" \
+  || die "$changelog has link definitions ('[X]: <url>' lines), which the script does not maintain: drop them"
+
 if [[ -z "$prev" ]]; then
   # First release: the hand-written [Unreleased] section becomes the release's.
   [[ "$current" == "0.0.0" ]] || die "no ${prefix}X.Y.Z tag yet, but $manifest is $current, not the 0.0.0 placeholder"
@@ -183,10 +211,14 @@ else
     esc="$(printf '\033')"
     sed "s/$esc\[[0-9;]*m//g" "$tmp/cliff.err" > "$tmp/cliff.plain" # git-cliff colours its log even off a tty
     grep -q 'UnconventionalCommitsError' "$tmp/cliff.plain" || { cat "$tmp/cliff.err" >&2; die "git-cliff failed"; }
-    echo "release: git-cliff cannot parse these commits as Conventional Commits, so the changelog and the bump leave them out:" >&2
     # "Commit <hash> is not conventional:", then the message, one "| " line per line.
     awk '/Commit [0-9a-f]+ is not conventional:/ {match($0, /Commit [0-9a-f]+/); h=substr($0, RSTART+7, RLENGTH-7); next}
-         h != "" && sub(/^[[:space:]]*\| /, "") {print "  " h " " $0; h=""}' "$tmp/cliff.plain" >&2
+         h != "" && sub(/^[[:space:]]*\| /, "") {print "  " h " " $0; h=""}' "$tmp/cliff.plain" > "$tmp/unconventional"
+    # An empty list would let --allow-unconventional drop commits unnamed.
+    [[ -s "$tmp/unconventional" ]] \
+      || { cat "$tmp/cliff.err" >&2; die "git-cliff refused unconventional commits, but its list of them could not be read"; }
+    echo "release: git-cliff cannot parse these commits as Conventional Commits, so the changelog and the bump leave them out:" >&2
+    cat "$tmp/unconventional" >&2
     ((allow_unconventional == 1)) || die "refusing; re-run with --allow-unconventional to release without them"
   fi
   case "$level" in
@@ -200,6 +232,9 @@ else
   cliff --strip all | cat -s | sed '/./,$!d' | sed '${/^$/d;}' > "$tmp/section"
   bad="$(grep '^### ' "$tmp/section" | grep -vxE '### (Added|Changed|Deprecated|Removed|Fixed|Security)' || true)"
   [[ -z "$bad" ]] || die "git-cliff rendered a heading that is not a Keep a Changelog kind: $bad (fix cliff.toml's commit_parsers)"
+  if [[ "$level" == [0-9]* ]]; then
+    ver_gt "$version" "$prev" || die "$version is not above the last release, $prev"
+  fi
   if [[ "$version" == "$prev" ]] || ! grep -q '^- ' "$tmp/section"; then
     die "nothing to release: no commit since $prefix$prev makes a changelog entry (ci, test, style, build and release commits do not, nor, with --allow-unconventional, unconventional ones)"
   fi
@@ -254,9 +289,8 @@ fi
 
 # --- execute -----------------------------------------------------------------
 written=1
-# Before the changelog is written: `pnpm version` refuses a dirty tree.
+# On the tree the preflight found clean, before the changelog is written.
 pnpm version "$version" --no-git-tag-version >/dev/null || die "pnpm version $version failed: nothing was committed"
-[[ "$(pkg version)" == "$version" ]] || die "pnpm version left $manifest at $(pkg version), not $version: nothing was committed"
 cp "$tmp/changelog" "$changelog"
 if ((verify == 1)); then
   pnpm lint || die "pnpm lint failed: nothing was committed"
@@ -266,12 +300,21 @@ if ((verify == 1)); then
 fi
 # The checks write dist/ only, which git ignores; anything else is theirs to
 # explain before a release commit.
-status="$(git status --porcelain -- . ":(exclude)$manifest" ":(exclude)$changelog")"
+status="$(git status --porcelain -- . ":(exclude)$manifest" ":(exclude)$changelog")" || die "git status failed"
 [[ -z "$status" ]] || die "the checks left changes besides ${files[*]}: nothing was committed"$'\n'"$status"
+# What is committed is the diff shown above, byte for byte.
+cmp -s "$manifest" "$tmp/manifest" \
+  || die "pnpm version wrote a $manifest other than the one shown: nothing was committed"$'\n'"$(diff -u "$tmp/manifest" "$manifest" || true)"
+cmp -s "$changelog" "$tmp/changelog" || die "$changelog changed during the checks: nothing was committed"
 
 git commit --quiet -S -m "chore(release): $tag" -- "${files[@]}" \
   || die "git commit failed (a commit hook, or signing): nothing was committed"
 committed=1
+# The pre-commit hook may rewrite what it commits.
+for f in manifest changelog; do
+  git show "HEAD:${!f}" | cmp -s - "$tmp/$f" \
+    || { reported=1; die "the release commit's ${!f} is not the one shown (a commit hook rewrote it?). To undo: git reset --hard origin/main"; }
+done
 git tag -s "$tag" -m "@decdn/client $version" \
   || { reported=1; die "tagging failed after the release commit. To undo: git reset --hard origin/main"; }
 if ! git push --atomic origin "HEAD:refs/heads/main" "refs/tags/$tag"; then

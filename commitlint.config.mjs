@@ -1,10 +1,9 @@
-// The same types as the PR title check (.github/workflows/pr-title.yml) and
-// cliff.toml's parsers: PRs are squash-merged with the PR title as the
-// subject, which scripts/release.sh renders into CHANGELOG.md. Keep the lists
-// in step. No case rule,
-// since a subject can start with a name (`README`, `DecdnClient`), and no
-// length limits: headers run long, and body paragraphs and trailers are not
-// wrapped.
+// The same types as the PR title check (.github/workflows/pr-title.yml), so a
+// branch's commits are conventional like the squash subject its title makes.
+// A new type that stays out of the changelog also goes in cliff.toml's skips.
+// No case rule, since a subject can start with a name (`README`,
+// `DecdnClient`), and no length limits: headers run long, and body paragraphs
+// and trailers are not wrapped.
 export default {
   extends: ["@commitlint/config-conventional"],
   rules: {

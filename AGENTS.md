@@ -50,6 +50,8 @@ pnpm test:browser    # Chromium smoke (needs playwright's chromium-headless-shel
   `commit-msg` hook; `.github/workflows/pr-title.yml` checks PR titles). PRs
   are squash-merged, so the PR title is the changelog entry:
   `scripts/release.sh` renders `CHANGELOG.md` sections with git-cliff
-  (`cliff.toml`). Never edit `CHANGELOG.md` by hand or add an `[Unreleased]`
-  section. Releases per RELEASING.md (`scripts/release.sh` cuts the signed
-  `v*` tag on `main`; local publish, no npm token in CI).
+  (`cliff.toml`). Until the first release, user-visible changes go in the
+  hand-written `[Unreleased]` section; after it, never edit `CHANGELOG.md` by
+  hand or add an `[Unreleased]` section. Releases per RELEASING.md
+  (`scripts/release.sh` cuts the signed `v*` tag on `main`; local publish, no
+  npm token in CI).

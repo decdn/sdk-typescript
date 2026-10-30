@@ -23,7 +23,9 @@ Commits and PR titles follow [Conventional Commits](https://www.conventionalcomm
 PRs are squash-merged with the PR title as the commit subject, and
 `scripts/release.sh` renders those subjects into `CHANGELOG.md` with git-cliff
 at release (see [RELEASING.md](RELEASING.md)): write a title a user can read as
-a changelog entry. Never edit `CHANGELOG.md` by hand.
+a changelog entry. Until the first release, a user-visible PR adds its entry
+to the hand-written `## [Unreleased]` section of `CHANGELOG.md`; after it,
+never edit `CHANGELOG.md` by hand.
 
 `pnpm install` also installs git hooks (husky). `pre-commit` fixes the staged
 files in place with `eslint --fix` and `prettier --write` (lint-staged,

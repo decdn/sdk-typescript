@@ -1,6 +1,7 @@
 # Releasing @decdn/client
 
-Releases are cut locally from a signed tag. CI builds and tests, but holds no
+Releases are cut locally by `scripts/release.sh` and published from its signed
+tag by `scripts/publish.sh`. CI builds and tests, but holds no
 npm token and publishes nothing: a `push`-triggered workflow runs the workflow
 definition from the pushed ref, so a token reachable from a workflow would be
 reachable from any tag anyone with push access could craft.
@@ -14,7 +15,7 @@ npm gives a scoped name to whoever owns the scope. Before the first release,
 confirm that the `decdn` npm organisation exists and owns the `@decdn` scope,
 and that you are a member with publish rights to it (`npm org ls decdn`). Add
 a second maintainer, so the package outlives one account. Log in with
-`npm login`; the script uses that session.
+`npm login`; `publish.sh` uses that session.
 
 `KEYS` holds the maintainer keys a release tag may be signed by. It is a
 verbatim copy of [decdn's `KEYS`](https://github.com/decdn/decdn/blob/main/KEYS):
@@ -38,10 +39,13 @@ The argument is the level: `auto` (the default), `patch`, `minor`, `major` or
 an explicit `X.Y.Z`. Without `--execute`, `release.sh` prints the new tag and
 the diff it would commit, and changes no file. It:
 
-1. **Checks the tree and the floor.** It runs on a clean `main` equal to
-   `origin/main`, with no local `v*` tag above origin's highest, and refuses
-   unless the decdn release `decdn.gatewayFloor` names is published (see
-   below).
+1. **Checks the tree, the key and the floor.** It runs on a clean `main` equal
+   to `origin/main`, with no local `vX.Y.Z` tag above origin's highest, and
+   `package.json` at the last release's version. With `--execute`, it signs a
+   throwaway commit and verifies it against `KEYS` alone, as `publish.sh`
+   verifies the tag. It refuses unless the decdn release `decdn.gatewayFloor`
+   names is published (see below), and tells a release GitHub does not have
+   from a `gh` that cannot ask.
 2. **Refuses unconventional commits.** git-cliff drops a commit it cannot parse
    as a Conventional Commit, from the changelog and from the bump, and only
    logs a count: an unconventional subject, but also an empty scope
@@ -65,40 +69,51 @@ the diff it would commit, and changes no file. It:
    and the first letter capitalised: `fix(site): keep the query (#12)` becomes
    `- **site**: Keep the query (#12)`. PRs are squash-merged with the PR title
    as the subject, so the PR title is the changelog entry.
-5. **Bumps and checks** (`--execute` only): `pnpm version X.Y.Z
---no-git-tag-version`, then `pnpm lint`, `pnpm test`, `pnpm build` and
-   `scripts/check-package.sh` (`--no-verify` skips the checks).
+5. **Bumps and checks** (`--execute` only):
+   `pnpm version X.Y.Z --no-git-tag-version`, then `pnpm lint`, `pnpm test`,
+   `pnpm build` and `scripts/check-package.sh` (`--no-verify` skips the
+   checks). The files it commits are the diff it showed, byte for byte, or it
+   stops.
 6. **Commits** (`--execute` only) `chore(release): vX.Y.Z` and tags `vX.Y.Z`
    (`@decdn/client X.Y.Z`), both signed, and pushes them with
    `git push --atomic origin main vX.Y.Z`: origin gets both or neither. If a
    check or the commit fails, the files are restored and nothing is committed.
    If tagging or the push fails, or the script is stopped after the commit, it
-   says whether origin got anything and how to undo. A refusal never touches
-   the working tree.
+   says how to undo: after a failed push, once it has checked what origin got;
+   when stopped, with the command that checks it. A refusal never touches the
+   working tree.
 
 **Prerequisites.**
 
 - [git-cliff](https://git-cliff.org) 2.9 or later, for `require_conventional`
   (`cargo install git-cliff`; CI tests with 2.14.1), and `gh`, logged in.
-- Git configured to sign, with `user.signingkey` set to a key in `KEYS`. The
-  script signs a throwaway commit object first, so a key that cannot sign fails
-  before the checks.
+- `gpg`, and git configured to sign with an OpenPGP key published in `KEYS`
+  (`user.signingkey`, `gpg.format` unset or `openpgp`). The script verifies a
+  throwaway signature against `KEYS` before the checks, so a key that cannot
+  sign, or one `publish.sh` would refuse, fails before anything is pushed.
 - A bypass of the `main` ruleset (an org admin), because the release commit
-  goes straight to `main`: its pull-request rule and its required status checks
-  both apply to a direct push.
+  goes straight to `main`, where the ruleset's pull-request rule and required
+  status checks apply to a direct push too.
+- The repository settings the changelog relies on: squash merges only, with
+  the PR title as the squash commit's subject (_Settings → General → Pull
+  Requests_), and `pr-title` a required status check.
 - CI green on the commit, and a green `Release gateways` run (see below).
 
 **The first release.** `package.json` starts at the `0.0.0` placeholder, and
 the first release names its level: `scripts/release.sh minor --execute` cuts
 `0.1.0`. Without a tag, git-cliff would render the whole history, so the first
 release does not use it: it renames the changelog's hand-written
-`## [Unreleased]` section to the dated version instead. After that, no
-`[Unreleased]` section is kept: the script refuses one, because every later
-section is generated.
+`## [Unreleased]` section to the dated version instead, so until then a
+user-visible PR adds its entry there by hand. After that, no `[Unreleased]`
+section is kept: the script refuses one, because every later section is
+generated.
 
-**A prerelease** (`v0.2.0-rc.1`) is not cut by `release.sh`: set `version` in a
-PR, then tag the merged commit by hand with `git tag -s` and push the tag. Its
-commits fall into the next release's generated section.
+**A prerelease** (`v0.2.0-rc.1`) is not cut by `release.sh`. Set `version` to
+it in a PR, tag the merged commit by hand with `git tag -s` and push the tag,
+publish it, then set `version` back to the last release in the next PR:
+`release.sh` refuses a `package.json` that is not at the last `vX.Y.Z` tag.
+Prerelease tags are not changelog boundaries, so the commits up to the
+prerelease fall into the next release's generated section.
 
 `publish.sh` refuses a tag that is not `v<semver>`, verifies the tag against
 `KEYS` (and against `DECDN_SIGNING_KEY` when set) and against `origin`, checks
@@ -108,7 +123,7 @@ build there before `pnpm publish --access public`. A prerelease
 (`v0.2.0-rc.1`) goes to the `next` dist-tag, so a plain install keeps the
 latest release.
 
-**This step is not re-runnable.** An npm version is immutable: it can never be
+**Publishing is not re-runnable.** An npm version is immutable: it can never be
 published again, even after `npm unpublish`. A broken release is fixed by the
 next patch version and `npm deprecate` on the broken one.
 
