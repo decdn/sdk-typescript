@@ -127,8 +127,12 @@ export class DecdnResponse {
         this.contentRange = { offset: cut.offset };
         return;
       }
-      // `get` refuses a window that starts past the end, as the gateway does.
-      const length = Math.min(cut.length ?? Infinity, cut.size - cut.offset);
+      // `get` refuses a window that starts past the end of a body that is not
+      // empty; an empty one holds no window.
+      const length = Math.max(
+        0,
+        Math.min(cut.length ?? Infinity, cut.size - cut.offset),
+      );
       this.contentLength = length;
       this.contentRange = { offset: cut.offset, length, size: cut.size };
       return;
@@ -401,9 +405,19 @@ export class DecdnClient {
     return { "x-decdn-token": this.token, "x-decdn-host": this.host };
   }
 
-  /** `uri` parsed, or checked and normalised as its string would parse. */
+  /**
+   * `uri` parsed, or checked and normalised as its string would parse; with
+   * the site's namespace when it names the site's own bundle without one,
+   * as the site serves it.
+   */
   private parse(uri: string | DecdnUri): DecdnUri {
-    if (typeof uri === "string") return parseUri(uri);
+    if (typeof uri === "string") return this.onSite(parseUri(uri));
+    // Checked first, so no delimiter in it formats into another part.
+    if (!isHash(uri.hash))
+      throw new DecdnError(
+        "BAD_URI",
+        "invalid hash in decdn URI: expected 64 hex characters",
+      );
     const parsed = parseUri(formatUri(uri));
     // Only an entry with no path formats as another kind: a bundle.
     if (parsed.kind !== uri.kind)
@@ -411,7 +425,18 @@ export class DecdnClient {
         "BAD_URI",
         "invalid decdn URI: an entry needs a path",
       );
-    return parsed;
+    return this.onSite(parsed);
+  }
+
+  /** `uri`, under the site's namespace when it names the site's own bundle without one. */
+  private onSite(uri: DecdnUri): DecdnUri {
+    if (
+      uri.namespace === undefined &&
+      this.site?.namespace !== undefined &&
+      this.site.hash === uri.hash
+    )
+      uri.namespace = this.site.namespace;
+    return uri;
   }
 
   /** Content on a loopback gateway is the token holder's alone. */
@@ -482,7 +507,7 @@ export class DecdnClient {
       );
     }
     if (typeof hashOrUri === "string" && isHash(hashOrUri))
-      return { hash: hashOrUri.toLowerCase(), kind: "blob" };
+      return this.onSite({ hash: hashOrUri.toLowerCase(), kind: "blob" });
     const { hash, namespace } = this.parse(hashOrUri);
     return namespace === undefined
       ? { hash, kind: "blob" }
@@ -728,13 +753,6 @@ export class DecdnClient {
       return { url, verified: off };
     }
     const own = this.site !== undefined && this.site.hash === uri.hash;
-    // The site serves its own entries under its host's namespace.
-    if (
-      own &&
-      uri.namespace === undefined &&
-      this.site?.namespace !== undefined
-    )
-      uri.namespace = this.site.namespace;
     return this.planEntry(uri, own ? "" : undefined, mode, ranged, signal);
   }
 

@@ -288,6 +288,25 @@ describe("public context", () => {
     await rejects(past.bytes(), "RANGE_NOT_SATISFIABLE");
   });
 
+  it("answers a range of an empty whole body empty", async () => {
+    const { fake, bundle } = publicFake();
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: () =>
+        Promise.resolve(
+          new Response(new Uint8Array(), {
+            headers: { "content-length": "0" },
+          }),
+        ),
+    });
+    const r = await c.get(`decdn:${bundle.hash}/dir%20one/b.bin`, {
+      range: { offset: 5, length: 2 },
+    });
+    expect(r.contentLength).toBe(0);
+    expect(r.contentRange).toEqual({ offset: 5, length: 0, size: 0 });
+    expect(await r.bytes()).toEqual(new Uint8Array());
+  });
+
   it("fails a whole body that ends before its window with TRUNCATED", async () => {
     const { fake, bundle } = publicFake();
     const c = await DecdnClient.open({
@@ -465,6 +484,12 @@ describe("public context", () => {
     );
     await rejects(
       c.get({ hash: blob, kind: "blob", namespace: 0n }),
+      "BAD_URI",
+    );
+    // A hash is a hash: its delimiters do not become other parts of the URI.
+    await rejects(c.get({ hash: `${blob}?ns=9`, kind: "blob" }), "BAD_URI");
+    await rejects(
+      c.get({ hash: `${bundle.hash}/a.txt`, kind: "bundle" }),
       "BAD_URI",
     );
     expect(fake.seen).toHaveLength(1);
@@ -1088,6 +1113,25 @@ describe("site context", () => {
     );
     const index = docs.entries.find((e) => e.path === "docs/index.html");
     expect((await c.head(`decdn:${docs.hash}/docs`)).hash).toBe(index?.hash);
+  });
+
+  it("reads its own bundle under its host's namespace, whatever the call", async () => {
+    const { fake, bundle } = publicFake();
+    fake.namespaced.set(bundle.hash, 7n);
+    onSite(fake, `7.${hashToBase32(bundle.hash)}.decdn.test`);
+    const c = await DecdnClient.open();
+    const entry = bundle.entries.find((e) => e.path === "a.txt");
+    expect((await c.head(`decdn:${bundle.hash}/a.txt`)).hash).toBe(entry?.hash);
+    expect((await c.resolve(`decdn:${bundle.hash}/a.txt`)).entry).toEqual(
+      entry,
+    );
+    expect((await c.manifest(bundle.hash)).hash).toBe(bundle.hash);
+    expect(await (await c.get(`decdn:${bundle.hash}/a.txt`)).text()).toBe(
+      "abc",
+    );
+    expect(
+      fake.seen.filter((s) => s.url.includes(`/_decdn/${bundle.hash}`)),
+    ).toHaveLength(1);
   });
 
   it("leaves a URI object it is given unchanged", async () => {
