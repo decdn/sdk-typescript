@@ -11,8 +11,11 @@
 //   in $PS_STATE/integrity when it has the version, E404 when it lacks it;
 //   with $PS_NPM `down` it fails to reach the registry, with `empty` it
 //   answers nothing (as npm before 11 does for a missing version), and with
-//   `odd` another version. `publish` logs its arguments and, without
-//   `--dry-run`, puts the version on the registry;
+//   `odd` another version. A dist-tag comes from $PS_STATE/dist-tag-<tag>
+//   (none when the file is missing); with $PS_NPM_TAGS `down` npm cannot be
+//   asked for it, and with `missing` the package is not on npm. `publish`
+//   logs its arguments and, without `--dry-run`, puts the version on the
+//   registry;
 // - `gh` answers `release view` from the stub releases (a draft when $PS_GH is
 //   `draft`, a failure when it is `down`), and `release create` records the
 //   release and its notes.
@@ -109,6 +112,15 @@ case "$1" in
       empty) exit 0 ;;
       odd) echo "0.1.9"; exit 0 ;;
     esac
+    if [[ "$3" == dist-tags.* ]]; then
+      case "\${PS_NPM_TAGS:-}" in
+        down) echo "npm error code ETIMEDOUT" >&2; exit 1 ;;
+        missing) echo "npm error code E404" >&2; exit 1 ;;
+      esac
+      f="$PS_STATE/dist-tag-\${3#dist-tags.}"
+      [[ ! -f "$f" ]] || cat "$f"
+      exit 0
+    fi
     version="\${2##*@}"
     if grep -qx "$version" "$PS_STATE/npm" 2>/dev/null; then
       [[ "$3" == dist.integrity ]] && cat "$PS_STATE/integrity" || echo "$version"
@@ -273,6 +285,39 @@ describe("publish.sh npm and github", () => {
     });
 
     it.each([
+      ["latest", "0.2.0", "0.3.0"],
+      ["next", "0.3.0-rc.1", "0.3.0-rc.2"],
+    ])(
+      "stops before moving %s back to a lower version",
+      (distTag, version, current) => {
+        writeFileSync(join(state, `dist-tag-${distTag}`), `${current}\n`);
+        const tgz = tarball(version);
+        for (const flags of [[], ["--dry-run"]]) {
+          const r = step(["npm", `v${version}`, tgz, ...flags]);
+          expect(r.status).toBe(1);
+          expect(r.stderr).toContain(
+            `npm's ${distTag} is ${current}, above ${version}: publishing would move ${distTag} back`,
+          );
+        }
+        expect(logged("npm publish")).toEqual([]);
+      },
+    );
+
+    it.each([
+      ["below it", { latest: "0.1.1" }, {}],
+      ["below it, as a prerelease", { latest: "0.2.0-rc.3" }, {}],
+      ["unset", {}, {}],
+      ["absent with the package", {}, { PS_NPM_TAGS: "missing" }],
+    ])("uploads when the dist-tag is %s", (_, tags, extra) => {
+      for (const [t, v] of Object.entries(tags)) {
+        writeFileSync(join(state, `dist-tag-${t}`), `${v}\n`);
+      }
+      const r = step(["npm", "v0.2.0", tarball("0.2.0")], extra);
+      expect(r.status, r.stderr).toBe(0);
+      expect(logged("npm publish")).toHaveLength(1);
+    });
+
+    it.each([
       [
         "a tarball of another version",
         () => tarball("0.1.9"),
@@ -296,6 +341,12 @@ describe("publish.sh npm and github", () => {
         () => tarball("0.2.0"),
         { PS_NPM: "odd" },
         "npm answered '0.1.9' when asked for @decdn/client@0.2.0",
+      ],
+      [
+        "an npm it cannot ask for the dist-tag",
+        () => tarball("0.2.0"),
+        { PS_NPM_TAGS: "down" },
+        "cannot ask npm for @decdn/client's latest dist-tag",
       ],
     ])("stops on %s before the upload", (_, make, extra, message) => {
       const r = step(["npm", "v0.2.0", make()], extra);

@@ -138,10 +138,12 @@ publish. Its steps are [`scripts/publish.sh`](scripts/publish.sh)'s:
      (`decdn.gatewayFloor`). A release without a section stops here.
    - It runs install, lint, tests, the build and `scripts/check-package.sh`,
      packs the tarball with `pnpm pack`, and dry-runs its upload.
-2. **`publish`**, in the `npm` environment with `id-token: write`, installs
+2. **`publish`**, in the `release` environment with `id-token: write`, installs
    and builds nothing: `publish.sh npm` checks that the tarball holds this
    version and uploads it with `npm publish --ignore-scripts`. A prerelease
    goes to the `next` dist-tag, so a plain install keeps the latest release.
+   The upload moves its dist-tag, so it stops when the dist-tag already names
+   a higher version: a delayed run never hands installs an older release.
 3. **`release`**: `publish.sh github` makes the tag's GitHub release, titled
    with the tag, with those notes. A prerelease's release is a prerelease,
    never the latest; with no changelog section, its notes are the npm link
@@ -186,23 +188,23 @@ once:
    EOF
    ```
 
-2. **The `npm` environment.** Under _Settings → Environments_, it allows
+2. **The `release` environment.** Under _Settings → Environments_, it allows
    deployments from the `v*` tag pattern and the `main` branch only, with no
    required reviewers: your signature on the tag is the human gate.
 
    ```bash
-   gh api -X PUT repos/decdn/sdk-typescript/environments/npm \
+   gh api -X PUT repos/decdn/sdk-typescript/environments/release \
      -F 'deployment_branch_policy[protected_branches]=false' \
      -F 'deployment_branch_policy[custom_branch_policies]=true'
-   gh api repos/decdn/sdk-typescript/environments/npm/deployment-branch-policies \
+   gh api repos/decdn/sdk-typescript/environments/release/deployment-branch-policies \
      -f name='v*' -f type=tag
-   gh api repos/decdn/sdk-typescript/environments/npm/deployment-branch-policies \
+   gh api repos/decdn/sdk-typescript/environments/release/deployment-branch-policies \
      -f name=main -f type=branch
    ```
 
 3. **The trusted publisher.** On npmjs.com, under `@decdn/client` → _Settings
    → Trusted publishing_, add GitHub Actions with organisation `decdn`,
-   repository `sdk-typescript`, workflow `publish.yml` and environment `npm`,
+   repository `sdk-typescript`, workflow `publish.yml` and environment `release`,
    and allow `npm publish`. npm does not check the fields when you save them,
    and a connection expires unless a publish through it succeeds within two
    days: add it just before a release.

@@ -50,6 +50,36 @@ VERSION="${TAG#v}"
 DIST_TAG=latest
 [[ "$VERSION" == *-* ]] && DIST_TAG=next
 
+# `node -e "$SEMVER_CMP" A B` prints gt, eq or lt: A against B in semver
+# precedence (prerelease below its release; numeric identifiers numerically,
+# below alphanumeric ones; a shorter identifier list below a longer one it
+# begins).
+# shellcheck disable=SC2016
+SEMVER_CMP='
+const parse = (v) => {
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(v);
+  if (!m) throw new Error(`not a version: ${v}`);
+  return { core: m.slice(1, 4).map(Number), pre: m[4] ? m[4].split(".") : [] };
+};
+const ident = (x, y) => {
+  const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+  if (nx && ny) return Math.sign(Number(x) - Number(y));
+  if (nx !== ny) return nx ? -1 : 1;
+  return x < y ? -1 : x > y ? 1 : 0;
+};
+const cmp = (a, b) => {
+  for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return Math.sign(a.core[i] - b.core[i]);
+  // A release is above its prereleases.
+  if (!a.pre.length || !b.pre.length) return Math.sign(b.pre.length - a.pre.length);
+  for (let i = 0; i < Math.min(a.pre.length, b.pre.length); i++) {
+    const c = ident(a.pre[i], b.pre[i]);
+    if (c) return c;
+  }
+  return Math.sign(a.pre.length - b.pre.length);
+};
+console.log(["lt", "eq", "gt"][cmp(parse(process.argv[1]), parse(process.argv[2])) + 1]);
+'
+
 need() {
   local tool
   for tool in "$@"; do
@@ -194,6 +224,23 @@ publish_npm() {
   elif ! grep -q 'code E404' "$SCRATCH/npm.err"; then
     cat "$SCRATCH/npm.err" >&2
     die "cannot ask npm whether it has $NAME@$VERSION"
+  fi
+
+  # The upload moves $DIST_TAG to this version, even below the one it names:
+  # a run that uploads after a later release's would hand plain installs the
+  # older version. Releases are cut in order on main, so only a delayed run
+  # is lower; it stops here, before the upload.
+  local current order
+  if current=$(npm view "$NAME" "dist-tags.$DIST_TAG" 2>"$SCRATCH/npm.err"); then
+    if [[ -n "$current" ]]; then
+      order=$(node -e "$SEMVER_CMP" "$current" "$VERSION") ||
+        die "cannot compare $current with $VERSION"
+      [[ "$order" != gt ]] ||
+        die "npm's $DIST_TAG is $current, above $VERSION: publishing would move $DIST_TAG back to $VERSION"
+    fi
+  elif ! grep -q 'code E404' "$SCRATCH/npm.err"; then
+    cat "$SCRATCH/npm.err" >&2
+    die "cannot ask npm for $NAME's $DIST_TAG dist-tag"
   fi
 
   # --ignore-scripts: the upload runs no code from the package.

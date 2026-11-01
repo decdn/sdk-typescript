@@ -5,15 +5,15 @@ name: Publish
 # workflow (RELEASING.md).
 #
 # The workflow holds no npm token. npm trusted publishing trusts this file, by
-# name, in decdn/sdk-typescript, run in the `npm` environment: the `publish`
-# job trades the job's GitHub OIDC token for a short-lived npm credential, and
-# npm adds a provenance attestation. npm matches the workflow by file name
-# only, and a tag push runs this file as the tag has it, so what limits
-# publishing lies outside it: the environment allows deployments only from
-# `v*` tags and `main`, and creating a `v*` tag is limited to org admins (the
-# `Releases` ruleset). `publish.sh verify` then refuses a tag that no key in
-# KEYS on origin/main signed. See RELEASING.md § Trusted publishing for the
-# one-time setup.
+# name, in decdn/sdk-typescript, run in the `release` environment: the
+# `publish` job trades the job's GitHub OIDC token for a short-lived npm
+# credential, and npm adds a provenance attestation. npm matches the workflow
+# by file name only, and a tag push runs this file as the tag has it, so what
+# limits publishing lies outside it: the environment allows deployments only
+# from `v*` tags and `main`, and creating or moving a `v*` tag is limited to
+# org admins (the `Releases` ruleset). `publish.sh verify` then refuses a tag
+# that no key in KEYS on origin/main signed. See RELEASING.md § Trusted
+# publishing for the one-time setup.
 #
 # Three jobs, because `id-token: write` lets every step in its job request an
 # OIDC token, and so an npm credential. `prepare` runs the code a build runs —
@@ -166,7 +166,7 @@ jobs:
     timeout-minutes: 10
     # npm trusts this environment name; its deployment policy limits which
     # refs may run this job.
-    environment: npm
+    environment: release
     permissions:
       contents: read
       id-token: write
