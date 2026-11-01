@@ -6,7 +6,7 @@
 // token holder calls all three.
 import type { DecdnClient } from "./client.js";
 import { DecdnError } from "./errors.js";
-import { errorOf, parseWithBigInts, send } from "./http.js";
+import { parseWithBigInts, sendOk } from "./http.js";
 
 /** A capability the gateway holds. */
 export interface RegisteredCapability {
@@ -47,13 +47,11 @@ export class LoopbackApi {
       (init.headers as Record<string, string>)["content-type"] =
         "application/json";
     }
-    const response = await send(
+    const response = await sendOk(
       this.client.fetch,
       `${this.client.origin}${path}`,
       init,
     );
-    if (response.status < 200 || response.status > 299)
-      throw await errorOf(response);
     return response.text();
   }
 

@@ -12,7 +12,8 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
 import type { DecdnClient } from "./client.js";
 import { DecdnError } from "./errors.js";
 import { fromHex, isHash, toHex } from "./hex.js";
-import { errorOf, parseWithBigInts, send } from "./http.js";
+import { concat } from "./bytes.js";
+import { parseWithBigInts, sendOk } from "./http.js";
 import { parseUri, SCHEME } from "./uri.js";
 
 /** The chain a pointer is signed for: the EIP-712 domain of `PUT /_pointer`. */
@@ -82,16 +83,6 @@ function word(n: bigint): Uint8Array {
   return bytes;
 }
 
-function concat(...parts: Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let at = 0;
-  for (const p of parts) {
-    out.set(p, at);
-    at += p.length;
-  }
-  return out;
-}
-
 const DOMAIN_TYPE = keccak_256(
   enc.encode(
     "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
@@ -154,18 +145,18 @@ export function pointerTypedData(
 function digest(domain: PointerDomain, pointer: Pointer): Uint8Array {
   const root = checked(pointer);
   const separator = keccak_256(
-    concat(
+    concat([
       DOMAIN_TYPE,
       keccak_256(enc.encode("decdn-pointer")),
       keccak_256(enc.encode("1")),
       word(chainIdOf(domain)),
-      concat(new Uint8Array(12), address(domain.publisherRegistry)),
-    ),
+      concat([new Uint8Array(12), address(domain.publisherRegistry)]),
+    ]),
   );
   const struct = keccak_256(
-    concat(POINTER_TYPE, word(pointer.namespace), root, word(pointer.seq)),
+    concat([POINTER_TYPE, word(pointer.namespace), root, word(pointer.seq)]),
   );
-  return keccak_256(concat(Uint8Array.of(0x19, 0x01), separator, struct));
+  return keccak_256(concat([Uint8Array.of(0x19, 0x01), separator, struct]));
 }
 
 /** The EIP-712 signing hash of `pointer`, `0x` + 64 hex. */
@@ -238,7 +229,7 @@ export function recoverPointerSigner(
     throw malformed();
   if (BigInt(`0x${hex.slice(64, 128)}`) > N / 2n) throw malformed();
   try {
-    const recovered = concat(Uint8Array.of(v - 27), bytes.subarray(0, 64));
+    const recovered = concat([Uint8Array.of(v - 27), bytes.subarray(0, 64)]);
     const key = secp256k1.recoverPublicKey(recovered, digest(domain, pointer), {
       prehash: false,
     });
@@ -314,13 +305,11 @@ export class PointerApi {
       body: `{"namespace":${pointer.namespace},"root":"0x${pointer.root}","seq":${pointer.seq},"signature":"${signature}"}`,
     };
     if (args.signal !== undefined) init.signal = args.signal;
-    const response = await send(
+    const response = await sendOk(
       this.client.fetch,
       `${this.client.origin}/_pointer`,
       init,
     );
-    if (response.status < 200 || response.status > 299)
-      throw await errorOf(response);
     return parseWithBigInts(await response.text(), [
       "namespace",
       "seq",
