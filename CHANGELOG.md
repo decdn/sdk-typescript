@@ -6,6 +6,17 @@ commit subjects on `main`, the squash-merged PR titles; the first release's
 section is hand-written. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the package follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] — 2026-11-01
+
+### Changed
+
+- **package**: Align keywords with the repo's GitHub topics (#20)
+- Point the contract-run links at decdn's sdk_contract module (#17)
+
+### Fixed
+
+- **Breaking:** **client**: Route manifests by namespace, cut ranges answered whole, and check URI objects (#21)
+
 ## [0.1.1] — 2026-10-30
 
 ### Fixed
