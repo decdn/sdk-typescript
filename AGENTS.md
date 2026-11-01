@@ -54,5 +54,6 @@ pnpm test:browser    # Chromium smoke (needs playwright's chromium-headless-shel
   (`cliff.toml`). Until the first release, user-visible changes go in the
   hand-written `[Unreleased]` section; after it, never edit `CHANGELOG.md` by
   hand or add an `[Unreleased]` section. Releases per RELEASING.md
-  (`scripts/release.sh` cuts the signed `v*` tag on `main`; local publish, no
-  npm token in CI).
+  (`scripts/release.sh` cuts the signed `v*` tag on `main`; its push starts
+  `.github/workflows/publish.yml`, which uploads through npm trusted
+  publishing, with no npm token).

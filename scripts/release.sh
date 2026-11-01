@@ -2,9 +2,9 @@
 # Cuts a release of `@decdn/client` on main, in the manner of `cargo release`:
 # bumps `version` with `pnpm version`, writes the CHANGELOG.md section with
 # git-cliff, then makes a signed release commit and a signed `vX.Y.Z` tag and
-# pushes both. There is no release PR. Publishing is the next, separate step,
-# `scripts/publish.sh vX.Y.Z`: an npm version is immutable, so nothing is
-# uploaded before the tag is on origin and a human runs it.
+# pushes both. There is no release PR. The tag push starts the `Publish`
+# workflow (.github/workflows/publish.yml), which verifies the tag, uploads the
+# package to npm through trusted publishing and makes the GitHub release.
 #
 #   scripts/release.sh [auto|patch|minor|major|X.Y.Z]
 #                      [--execute] [--no-verify] [--allow-unconventional]
@@ -33,8 +33,8 @@
 # scripts/check-package.sh on the result unless --no-verify, so a release that
 # fails them is never committed. If any of that or the commit fails, the files
 # are restored. Run it on an up-to-date, clean main, with git configured to sign
-# with an OpenPGP key published in KEYS (user.signingkey; publish.sh verifies
-# the tag against KEYS), and with a bypass of the main ruleset: the release
+# with an OpenPGP key published in KEYS (user.signingkey; the Publish workflow
+# verifies the tag against KEYS), and with a bypass of the main ruleset: the release
 # commit goes straight to main.
 set -euo pipefail
 
@@ -108,9 +108,9 @@ if ((execute == 1)); then
   [[ -n "$signingkey" ]] || die "git has no user.signingkey: the release commit and tag are signed"
   format="$(git config gpg.format || true)"
   [[ -z "$format" || "$format" == "openpgp" ]] \
-    || die "gpg.format is $format: publish.sh verifies the tag against KEYS, an OpenPGP keyring"
+    || die "gpg.format is $format: the Publish workflow verifies the tag against KEYS, an OpenPGP keyring"
   # Sign a throwaway commit object now, not after the checks, and verify it
-  # against KEYS alone, as publish.sh verifies the tag: a key that cannot sign,
+  # against KEYS alone, as the Publish workflow verifies the tag: a key that cannot sign,
   # or one KEYS does not hold, would otherwise fail only after the push.
   probe="$(git commit-tree -S -p HEAD -m "release.sh signing check" "HEAD^{tree}" 2>"$tmp/sign.err")" \
     || { cat "$tmp/sign.err" >&2; die "git cannot sign with user.signingkey"; }
@@ -118,7 +118,7 @@ if ((execute == 1)); then
   mkdir -m 700 "$tmp/keys"
   gpg --homedir "$tmp/keys" --batch --import KEYS >/dev/null 2>&1 || die "KEYS is not a valid OpenPGP keyring"
   GNUPGHOME="$tmp/keys" git verify-commit "$probe" >/dev/null 2>&1 \
-    || die "user.signingkey ($signingkey) signs with a key that is not in KEYS: publish.sh would refuse the tag"
+    || die "user.signingkey ($signingkey) signs with a key that is not in KEYS: the Publish workflow would refuse the tag"
 fi
 
 # <key>: a string field of package.json, or nothing.
@@ -337,6 +337,5 @@ if ! git push --atomic origin "HEAD:refs/heads/main" "refs/tags/$tag"; then
   exit 1
 fi
 pushed=1
-echo "tagged $tag and pushed it with the release commit. Publish it:"
-echo "  DECDN_NPM_DRY_RUN=1 scripts/publish.sh $tag"
-echo "  scripts/publish.sh $tag"
+echo "tagged $tag and pushed it with the release commit. The Publish workflow uploads it:"
+echo "  gh run list --repo decdn/sdk-typescript --workflow publish.yml --branch $tag"

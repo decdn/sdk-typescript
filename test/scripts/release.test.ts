@@ -282,7 +282,7 @@ describe.skipIf(MISSING.length > 0 && !process.env.CI)(
       it("releases [Unreleased] as it is, signed and pushed", () => {
         const r = release("minor", "--execute");
         expect(r.status, r.stderr).toBe(0);
-        expect(r.stdout).toContain("scripts/publish.sh v0.1.0");
+        expect(r.stdout).toContain("--workflow publish.yml --branch v0.1.0");
         expect(version()).toBe("0.1.0");
         expect(file("CHANGELOG.md")).toBe(
           CHANGELOG.replace(

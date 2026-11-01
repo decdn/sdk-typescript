@@ -1,0 +1,237 @@
+name: Publish
+
+# Publishes @decdn/client to npm from a signed `v*` tag, then makes the tag's
+# GitHub release. scripts/release.sh pushes the tag; the push starts this
+# workflow (RELEASING.md).
+#
+# The workflow holds no npm token. npm trusted publishing trusts this file, by
+# name, in decdn/sdk-typescript, run in the `npm` environment: the `publish`
+# job trades the job's GitHub OIDC token for a short-lived npm credential, and
+# npm adds a provenance attestation. npm matches the workflow by file name
+# only, and a tag push runs this file as the tag has it, so what limits
+# publishing lies outside it: the environment allows deployments only from
+# `v*` tags and `main`, and creating a `v*` tag is limited to org admins (the
+# `Releases` ruleset). `publish.sh verify` then refuses a tag that no key in
+# KEYS on origin/main signed. See RELEASING.md § Trusted publishing for the
+# one-time setup.
+#
+# Three jobs, because `id-token: write` lets every step in its job request an
+# OIDC token, and so an npm credential. `prepare` runs the code a build runs —
+# the pnpm install, the tests, the build — with no OIDC access, and packs the
+# tarball. `publish` holds `id-token: write`, installs nothing and uploads that
+# tarball without running its scripts. `release` makes the GitHub release.
+#
+# Re-running is safe: scripts/publish.sh skips the upload when npm has this
+# tarball and the release when it exists. The `package` artifact lasts a day,
+# so after that, re-run all jobs rather than the failed ones.
+# `workflow_dispatch` runs this file from `main` against a given tag, for when
+# the copy in the tag's tree cannot run; every job still checks out the tag,
+# so publish.sh, the tests and the build are the tag's. A dispatch's provenance
+# names main's commit, not the tag's.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, e.g. v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One group per tag: a push and a dispatch of the same tag run one at a time,
+# and a run of one tag never replaces the waiting run of another (GitHub keeps
+# only the newest waiting run in a group). A run in progress is never
+# cancelled: that could leave the version on npm without its GitHub release.
+concurrency:
+  group: publish-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+# git-cliff, for scripts/release.sh's fixture-repo tests in `pnpm test`: the
+# release tarball, pinned by sha256, as in ci.yml.
+env:
+  GIT_CLIFF_VERSION: 2.14.1
+  GIT_CLIFF_SHA256: dfe9bef0c7a00d05fafe78e6e591a1a280d39dd495b8066764db0a559acde67f
+
+jobs:
+  prepare:
+    name: Check, test and pack the signed tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # package.json's `prepare` script runs husky; no hooks are needed here.
+      HUSKY: "0"
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.verify.outputs.sha }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+    steps:
+      # The tag comes from the push, or from the dispatch input. It reaches
+      # the shell through `env`, never inlined into the script, and this
+      # step's pattern keeps it to ref-safe characters before the checkout
+      # uses it; publish.sh then holds it to strict semver.
+      - name: Resolve the tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then TAG="$INPUT_TAG"; else TAG="$GITHUB_REF_NAME"; fi
+          if ! [[ "$TAG" =~ ^v[0-9A-Za-z.-]+$ ]]; then
+            echo "::error::'$TAG' is not a release tag (expected vMAJOR.MINOR.PATCH)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # Full fetch: `git verify-tag` needs the annotated tag object, and
+      # publish.sh reads KEYS from origin/main.
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # On a push, the tag must still name the commit the push named.
+      - name: Verify the tag signature
+        id: verify
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          scripts/publish.sh verify "$TAG"
+          SHA=$(git rev-parse HEAD)
+          if [ "$EVENT" = push ] && [ "$SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG now points at $SHA, but the push named $GITHUB_SHA"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      # No dependency cache: a cache another run wrote must not reach a
+      # release. The one third-party action on the way to the tarball is
+      # pinned by commit.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      # Before the build: a release without its changelog section stops here.
+      - name: Render the release notes
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          scripts/publish.sh notes "$TAG" > "$RUNNER_TEMP/out/notes.md"
+          cat "$RUNNER_TEMP/out/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      # The pin is the workflow's `env`.
+      - name: Install git-cliff
+        run: |
+          f="git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$f" "https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/$f"
+          echo "${GIT_CLIFF_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/git-cliff-${GIT_CLIFF_VERSION}" >> "$GITHUB_PATH"
+      - run: pnpm test
+      - run: pnpm build
+      - run: scripts/check-package.sh
+
+      - name: Pack
+        id: pack
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          pnpm pack --pack-destination "$RUNNER_TEMP/out"
+          tarball=$(cd "$RUNNER_TEMP/out" && ls -- *.tgz)
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          scripts/publish.sh npm "$TAG" "$RUNNER_TEMP/out/$tarball" --dry-run
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package
+          path: |
+            ${{ runner.temp }}/out/*.tgz
+            ${{ runner.temp }}/out/notes.md
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish to npm
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # npm trusts this environment name; its deployment policy limits which
+    # refs may run this job.
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # For scripts/publish.sh only: nothing here is installed or built.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      # npm trusted publishing needs npm 11.5.1 or later.
+      - name: Check npm
+        run: |
+          v=$(npm --version)
+          if [ "$(printf '%s\n' 11.5.1 "$v" | sort -V | head -n1)" != 11.5.1 ]; then
+            echo "::error::npm $v cannot publish through trusted publishing (11.5.1 or later)"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: package
+          path: ${{ runner.temp }}/package
+
+      - name: Publish
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TARBALL: ${{ needs.prepare.outputs.tarball }}
+        run: scripts/publish.sh npm "$TAG" "$RUNNER_TEMP/package/$TARBALL"
+
+  release:
+    name: Make the GitHub release
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: package
+          path: ${{ runner.temp }}/package
+
+      # `--verify-tag` releases wherever the tag points now: it must still be
+      # the commit npm got.
+      - name: Make the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          now=$(git ls-remote origin "refs/tags/$TAG^{}" | cut -f1)
+          if [ "$now" != "$SHA" ]; then
+            echo "::error::$TAG now points at '$now', but npm got $SHA"
+            exit 1
+          fi
+          scripts/publish.sh github "$TAG" "$RUNNER_TEMP/package/notes.md"
