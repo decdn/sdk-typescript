@@ -182,6 +182,8 @@ export class FakeGateway {
   readonly truncated = new Set<string>();
   /** Hashes answered 206 with their first byte, whatever the request asked: a lying gateway. */
   readonly partial = new Set<string>();
+  /** Hashes only the nodes of one namespace hold: found with that `?ns=` hint alone. */
+  readonly namespaced = new Map<string, bigint>();
   /** Loopback capability scopes registered: `example.com`, `*.example.com`, `*`. */
   readonly scopes: string[] = [];
   /** Namespace pointers: namespace id → bundle hash. */
@@ -256,7 +258,8 @@ export class FakeGateway {
     ) {
       const location = response.headers.get("location");
       if (location !== null)
-        return this.fetch(location, {
+        return this.fetch(new URL(location, req.url).href, {
+          method: req.method,
           headers: req.headers,
           signal: req.signal,
         });
@@ -721,8 +724,18 @@ export class FakeGateway {
     return response;
   }
 
-  private manifestOf(hash: string): BundleManifest | Response {
-    const bytes = this.blobs.get(hash);
+  /** The blob `hash`, as a pull with the namespace hint `namespace` finds it. */
+  private blob(hash: string, namespace?: bigint): Uint8Array | undefined {
+    const only = this.namespaced.get(hash);
+    if (only !== undefined && only !== namespace) return undefined;
+    return this.blobs.get(hash);
+  }
+
+  private manifestOf(
+    hash: string,
+    namespace?: bigint,
+  ): BundleManifest | Response {
+    const bytes = this.blob(hash, namespace);
     if (bytes === undefined) return text(404, "not found\n");
     try {
       return parseManifest(bytes);
@@ -731,12 +744,31 @@ export class FakeGateway {
     }
   }
 
+  /**
+   * A site's answer for `path`, which `manifest` has no entry at: a
+   * redirect to the directory when it has an `index.html`, relative to the
+   * request, so it holds under `/_decdn/` too; else 404.
+   */
+  private directory(
+    uri: DecdnUri,
+    manifest: BundleManifest,
+    path: string,
+  ): Response {
+    if (!manifest.entries.some((e) => e.path === `${path}/index.html`))
+      return text(404, `no entry ${path} in bundle\n`);
+    const last = formatUri(uri).split("?")[0]?.split("/").pop() ?? "";
+    return new Response(null, {
+      status: 302,
+      headers: { location: `${last}/` },
+    });
+  }
+
   private headSite(uri: DecdnUri): Response {
-    const manifest = this.manifestOf(uri.hash);
+    const manifest = this.manifestOf(uri.hash, uri.namespace);
     if (manifest instanceof Response) return manifest;
     const path = uri.kind === "bundle" ? "index.html" : (uri.path ?? "");
     const entry = manifest.entries.find((e) => e.path === path);
-    if (entry === undefined) return text(404, `no entry ${path}\n`);
+    if (entry === undefined) return this.directory(uri, manifest, path);
     const headers: Record<string, string> = {
       "content-type": siteType(path),
       etag: `"${entry.hash}"`,
@@ -782,7 +814,7 @@ export class FakeGateway {
       etag: `"${uri.hash}"`,
       "x-content-type-options": "nosniff",
     };
-    const bytes = this.blobs.get(uri.hash);
+    const bytes = this.blob(uri.hash, uri.namespace);
     // The empty root is empty, with no proof.
     if (!this.proven.has(uri.hash) && bytes?.length !== 0) {
       if (this.allowance <= 0) {
@@ -841,7 +873,7 @@ export class FakeGateway {
       // The gateway proves a raw blob's size before it answers (one chunk
       // group of the allowance, once), so a raw blob answers as a sized
       // entry does.
-      const bytes = this.blobs.get(uri.hash);
+      const bytes = this.blob(uri.hash, uri.namespace);
       if (bytes === undefined) return text(404, "not found\n");
       this.prove(uri.hash, bytes.length);
       return this.sized(uri, uri.hash, bytes, bytes.length, range, {
@@ -850,7 +882,7 @@ export class FakeGateway {
         "x-content-type-options": "nosniff",
       });
     }
-    const manifest = this.manifestOf(uri.hash);
+    const manifest = this.manifestOf(uri.hash, uri.namespace);
     if (manifest instanceof Response) return manifest;
     this.charge(this.blobs.get(uri.hash)?.length ?? 0);
     if (uri.kind === "bundle") {
@@ -883,7 +915,11 @@ export class FakeGateway {
   ): Response {
     const path = uri.path ?? "";
     const entry = manifest.entries.find((e) => e.path === path);
-    if (entry === undefined) return text(404, `no entry ${path} in bundle\n`);
+    if (entry === undefined) {
+      return present === "site"
+        ? this.directory(uri, manifest, path)
+        : text(404, `no entry ${path} in bundle\n`);
+    }
     if (this.unfunded.has(entry.hash))
       return this.refusal(
         503,
@@ -891,7 +927,7 @@ export class FakeGateway {
         60,
         "the gateway's pool cannot pay right now",
       );
-    const bytes = this.blobs.get(entry.hash);
+    const bytes = this.blob(entry.hash, uri.namespace);
     if (bytes === undefined) return text(502, "the upstream pull failed\n");
     const name = path.split("/").pop() ?? path;
     const rewrite = present === "site" && REWRITTEN.test(path);

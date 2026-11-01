@@ -9,7 +9,7 @@
 //   other content through `/_decdn/`.
 import { base32ToHash, hashToBase32 } from "./base32.js";
 import { DecdnError } from "./errors.js";
-import { errorOf, send, type Fetch } from "./http.js";
+import { sendOk, type Fetch } from "./http.js";
 import { isHash } from "./hex.js";
 import {
   MAX_MANIFEST_BYTES,
@@ -21,7 +21,7 @@ import { LoopbackApi } from "./loopback.js";
 import { rewritten, siteType } from "./mime.js";
 import { integer, PointerApi, type PointerDomain } from "./pointer.js";
 import { formatUri, parseUri, SCHEME, type DecdnUri } from "./uri.js";
-import { collect, guard } from "./verify.js";
+import { collect, guard, pastEnd, slice } from "./verify.js";
 
 /** Where the client runs and how it reaches the gateway. */
 export type Context = "public" | "loopback" | "site";
@@ -86,8 +86,16 @@ export class DecdnResponse {
   readonly headers: Headers;
   readonly url: string;
   readonly contentType: string;
+  /** How many bytes the body holds, when known: never the encoded length of a body decoded on the way. */
   readonly contentLength?: number;
-  readonly contentRange?: { offset: number; length: number; size: number };
+  /**
+   * The window the body holds: from `Content-Range` on a `206`; or, when the
+   * gateway answered a range with the whole body (`200`) and the client cut
+   * the window from it, from the range, with `length` and `size` only when
+   * the whole body's length is known (not for a page a site rewrites, which
+   * streams with no length).
+   */
+  readonly contentRange?: { offset: number; length?: number; size?: number };
   /**
    * `true`: the body is hashed as it streams, and ends with `HASH_MISMATCH`
    * instead of `done` unless it hashes to the hash that names it.
@@ -103,6 +111,7 @@ export class DecdnResponse {
     body: ReadableStream<Uint8Array>,
     verified: boolean | "skipped",
     contentType?: string,
+    cut?: { offset: number; length?: number; size?: number },
   ) {
     this.status = response.status;
     this.headers = response.headers;
@@ -111,9 +120,25 @@ export class DecdnResponse {
       contentType ??
       response.headers.get("content-type") ??
       "application/octet-stream";
-    const length = response.headers.get("content-length");
-    if (length !== null && /^\d+$/.test(length))
-      this.contentLength = Number(length);
+    this.verified = verified;
+    this.body = body;
+    if (cut !== undefined) {
+      if (cut.size === undefined) {
+        this.contentRange = { offset: cut.offset };
+        return;
+      }
+      // `get` refuses a window that starts past the end of a body that is not
+      // empty; an empty one holds no window.
+      const length = Math.max(
+        0,
+        Math.min(cut.length ?? Infinity, cut.size - cut.offset),
+      );
+      this.contentLength = length;
+      this.contentRange = { offset: cut.offset, length, size: cut.size };
+      return;
+    }
+    const length = bodyLength(response);
+    if (length !== undefined) this.contentLength = length;
     const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(
       response.headers.get("content-range") ?? "",
     );
@@ -125,8 +150,6 @@ export class DecdnResponse {
         size: Number(size),
       };
     }
-    this.verified = verified;
-    this.body = body;
   }
 
   /** The whole body. Rejects with `HASH_MISMATCH` or `TRUNCATED`. */
@@ -250,12 +273,41 @@ interface Plan {
   verified: boolean | "skipped";
   /** The entry by its hash, unrewritten: where a verified entry comes from when its site answers with a type the gateway rewrites. */
   blobUrl?: string;
+  /** The type of an entry fetched by its hash, which the bare host serves as bytes: the one its site serves it as. */
+  contentType?: string;
 }
 
 /** The types a site rewrites as it streams (`Rewrite::for_type` in the gateway). */
 function isRewrittenType(contentType: string | null): boolean {
   const essence = (contentType ?? "").split(";")[0]?.trim().toLowerCase();
   return essence === "text/html" || essence === "text/css";
+}
+
+/**
+ * How many bytes the body holds as it is read: `Content-Length`; or
+ * `undefined` when a `Content-Encoding` has the body decoded on the way,
+ * since `Content-Length` then counts the encoded bytes.
+ */
+function bodyLength(response: Response): number | undefined {
+  const encoding = (response.headers.get("content-encoding") ?? "")
+    .trim()
+    .toLowerCase();
+  if (encoding !== "" && encoding !== "identity") return undefined;
+  const length = response.headers.get("content-length");
+  return length !== null && /^\d+$/.test(length) ? Number(length) : undefined;
+}
+
+/**
+ * A manifest read, cached by key and shared by every caller of that key. A
+ * failed read leaves the cache, and so does one a caller abandons before it
+ * settles.
+ */
+interface ManifestRead {
+  promise: Promise<BundleManifest>;
+  /** Aborts the read once every caller has stopped waiting on it. */
+  abort: AbortController;
+  waiting: number;
+  settled: boolean;
 }
 
 export class DecdnClient {
@@ -276,7 +328,8 @@ export class DecdnClient {
   private readonly host?: string;
   private readonly verify: VerifyMode;
   private readonly cacheSize: number;
-  private readonly manifests = new Map<string, Promise<BundleManifest>>();
+  /** Manifest reads by hash and namespace hint, least recently used first. */
+  private readonly manifests = new Map<string, ManifestRead>();
 
   private constructor(
     context: Context,
@@ -352,8 +405,47 @@ export class DecdnClient {
     return { "x-decdn-token": this.token, "x-decdn-host": this.host };
   }
 
+  /**
+   * `uri` parsed, or checked and normalised as its string would parse; with
+   * the site's namespace when it names the site's own bundle without one,
+   * as the site serves it.
+   */
   private parse(uri: string | DecdnUri): DecdnUri {
-    return typeof uri === "string" ? parseUri(uri) : uri;
+    if (typeof uri === "string") return this.onSite(parseUri(uri));
+    // Checked first, so no delimiter in it formats into another part.
+    if (!isHash(uri.hash))
+      throw new DecdnError(
+        "BAD_URI",
+        "invalid hash in decdn URI: expected 64 hex characters",
+      );
+    const parsed = parseUri(formatUri(uri));
+    // Only an entry with no path formats as another kind: a bundle.
+    if (parsed.kind !== uri.kind)
+      throw new DecdnError(
+        "BAD_URI",
+        "invalid decdn URI: an entry needs a path",
+      );
+    return this.onSite(parsed);
+  }
+
+  /** `uri`, under the site's namespace when it names the site's own bundle without one. */
+  private onSite(uri: DecdnUri): DecdnUri {
+    if (
+      uri.namespace === undefined &&
+      this.site?.namespace !== undefined &&
+      this.site.hash === uri.hash
+    )
+      uri.namespace = this.site.namespace;
+    return uri;
+  }
+
+  /** Content on a loopback gateway is the token holder's alone. */
+  private needToken(): void {
+    if (this.context === "loopback" && this.token === undefined) {
+      throw config(
+        "content on a loopback gateway needs its token: a page without it reaches /_delegate and /_capability alone",
+      );
+    }
   }
 
   /** The URI on the bare host, or under `/_decdn/` on a site. */
@@ -399,10 +491,15 @@ export class DecdnClient {
     return `${gw.protocol}//${ns}.${gw.host}/`;
   }
 
-  /** The hash a manifest call names, or the site's own. */
-  private manifestHash(hashOrUri?: string | DecdnUri): string {
+  /** The manifest a manifest call names, as a blob URI with its namespace hint; or the site's own. */
+  private manifestUri(hashOrUri?: string | DecdnUri): DecdnUri {
     if (hashOrUri === undefined) {
-      if (this.site?.hash !== undefined) return this.site.hash;
+      if (this.site?.hash !== undefined) {
+        const uri: DecdnUri = { hash: this.site.hash, kind: "blob" };
+        if (this.site.namespace !== undefined)
+          uri.namespace = this.site.namespace;
+        return uri;
+      }
       throw config(
         this.site === undefined
           ? "manifest needs a hash outside a site page"
@@ -410,56 +507,121 @@ export class DecdnClient {
       );
     }
     if (typeof hashOrUri === "string" && isHash(hashOrUri))
-      return hashOrUri.toLowerCase();
-    return this.parse(hashOrUri).hash;
+      return this.onSite({ hash: hashOrUri.toLowerCase(), kind: "blob" });
+    const { hash, namespace } = this.parse(hashOrUri);
+    return namespace === undefined
+      ? { hash, kind: "blob" }
+      : { hash, kind: "blob", namespace };
   }
 
-  /** The bundle manifest a hash or URI names, parsed and verified; cached per client by hash. */
+  /**
+   * The bundle manifest a hash or URI names, parsed and verified; cached per
+   * client by hash and namespace hint. The hint, a URI's `?ns=`, goes with
+   * the request: it routes the pull to the namespace's nodes.
+   */
   async manifest(
     hashOrUri?: string | DecdnUri,
     signal?: AbortSignal,
   ): Promise<BundleManifest> {
-    const hash = this.manifestHash(hashOrUri);
-    const cached = this.manifests.get(hash);
-    if (cached !== undefined) {
-      this.manifests.delete(hash);
-      this.manifests.set(hash, cached);
-      return untilAborted(cached, signal);
+    return this.readManifest(this.manifestUri(hashOrUri), signal);
+  }
+
+  private async readManifest(
+    uri: DecdnUri,
+    signal?: AbortSignal,
+  ): Promise<BundleManifest> {
+    this.needToken();
+    // A caller that has already given up starts no read.
+    signal?.throwIfAborted();
+    const key = formatUri(uri);
+    let read = this.manifests.get(key);
+    if (read === undefined) {
+      read = this.startRead(key, uri);
+    } else {
+      this.manifests.delete(key);
+      this.manifests.set(key, read);
     }
-    // One read serves every caller waiting on this hash, so it carries no
-    // caller's signal: each caller stops waiting on its own abort instead.
-    const pending = (async () => {
+    read.waiting++;
+    try {
+      return await untilAborted(read.promise, signal);
+    } finally {
+      read.waiting--;
+      if (!read.settled && signal?.aborted === true) {
+        // The read may be the reason the caller gave up: the next caller
+        // starts its own instead of joining it.
+        if (this.manifests.get(key) === read) this.manifests.delete(key);
+        if (read.waiting === 0) read.abort.abort();
+      }
+    }
+  }
+
+  /**
+   * One read of a manifest, shared by every caller of its key, so it
+   * carries no caller's signal: each caller stops waiting on its own abort,
+   * and the last one to stop aborts the read.
+   */
+  private startRead(key: string, uri: DecdnUri): ManifestRead {
+    const abort = new AbortController();
+    const promise = (async () => {
       const response = await this.request(
-        this.bareUrl({ hash, kind: "blob" }),
+        this.bareUrl(uri),
         "GET",
         {},
+        abort.signal,
       );
       return parseManifest(
-        await collect(guard(response.body, {}), MAX_MANIFEST_BYTES),
-        hash,
+        await collect(
+          guard(response.body, { signal: abort.signal }),
+          MAX_MANIFEST_BYTES,
+        ),
+        uri.hash,
       );
     })();
-    this.manifests.set(hash, pending);
-    // A failed read drops its own entry only: once evicted, the hash's slot
+    const read: ManifestRead = { promise, abort, waiting: 0, settled: false };
+    this.manifests.set(key, read);
+    // Attached before any caller awaits `promise`, so these handlers run
+    // first and `settled` is set before a caller's `finally` reads it.
+    // A failed read drops its own entry only: once evicted, the key's slot
     // may hold a newer read.
-    pending.catch(() => {
-      if (this.manifests.get(hash) === pending) this.manifests.delete(hash);
-    });
+    promise.then(
+      () => {
+        read.settled = true;
+      },
+      () => {
+        read.settled = true;
+        if (this.manifests.get(key) === read) this.manifests.delete(key);
+      },
+    );
     while (this.manifests.size > this.cacheSize) {
       const oldest = this.manifests.keys().next().value;
       if (oldest === undefined) break;
       this.manifests.delete(oldest);
     }
-    return untilAborted(pending, signal);
+    return read;
   }
 
-  /** The manifest entry `uri` names; `NOT_FOUND` when the bundle has none. */
+  /**
+   * The manifest entry `uri` names; `NOT_FOUND` when the bundle has none.
+   * Off loopback, where entries come from their site, a path that names a
+   * directory with an `index.html` names that `index.html`: a site redirects
+   * the directory's path to it. The bare host does not, and a loopback
+   * client fetches entries there.
+   */
   private async entryOf(
     uri: DecdnUri,
     signal?: AbortSignal,
   ): Promise<ManifestEntry> {
-    const manifest = await this.manifest(uri.hash, signal);
-    const entry = manifest.entries.find((e) => e.path === uri.path);
+    const manifest = await this.readManifest(
+      uri.namespace === undefined
+        ? { hash: uri.hash, kind: "blob" }
+        : { hash: uri.hash, kind: "blob", namespace: uri.namespace },
+      signal,
+    );
+    const entry =
+      manifest.entries.find((e) => e.path === uri.path) ??
+      (this.context !== "loopback"
+        ? manifest.entries.find((e) => e.path === `${uri.path}/index.html`)
+        : undefined);
     if (entry === undefined) {
       throw new DecdnError(
         "NOT_FOUND",
@@ -479,7 +641,7 @@ export class DecdnClient {
     };
     if (u.kind === "blob") return out;
     out.siteUrl = this.siteUrl(u);
-    if (u.kind === "bundle") await this.manifest(u.hash);
+    if (u.kind === "bundle") await this.manifest(u);
     else out.entry = await this.entryOf(u);
     return out;
   }
@@ -497,10 +659,7 @@ export class DecdnClient {
       headers: bare ? { ...this.authHeaders(), ...headers } : headers,
     };
     if (signal !== undefined) init.signal = signal;
-    const response = await send(this.fetch, url, init);
-    if (response.status < 200 || response.status > 299)
-      throw await errorOf(response);
-    return response;
+    return sendOk(this.fetch, url, init);
   }
 
   /** An entry by its own hash, as a blob: the bytes the manifest names, unrewritten. */
@@ -613,15 +772,18 @@ export class DecdnClient {
       };
     }
     const entry = await this.entryOf(uri, signal);
+    const target = entry.path === uri.path ? uri : { ...uri, path: entry.path };
     const plan: Plan = {
-      url: this.entryUrl(uri, own, entry),
+      url: this.entryUrl(target, own, entry),
       hash: entry.hash,
       verified: true,
     };
     if (entry.size !== undefined) plan.length = entry.size;
-    const blobUrl = this.entryBlobUrl(uri, entry);
-    if (plan.url !== blobUrl && this.context !== "loopback")
-      plan.blobUrl = blobUrl;
+    if (this.context !== "loopback") {
+      const blobUrl = this.entryBlobUrl(target, entry);
+      if (plan.url === blobUrl) plan.contentType = siteType(entry.path);
+      else plan.blobUrl = blobUrl;
+    }
     return plan;
   }
 
@@ -633,6 +795,7 @@ export class DecdnClient {
     uri: string | DecdnUri,
     opts: GetOptions = {},
   ): Promise<DecdnResponse> {
+    this.needToken();
     const mode = opts.verify ?? this.verify;
     const plan = await this.plan(
       uri,
@@ -656,7 +819,7 @@ export class DecdnClient {
     // A site rewrites what it serves as HTML or CSS. `rewritten` picks those
     // entries out by name up front; any other the site answers with such a
     // type comes by its hash, keeping the site's type.
-    let contentType: string | undefined;
+    let contentType = plan.contentType;
     if (
       plan.blobUrl !== undefined &&
       isRewrittenType(response.headers.get("content-type"))
@@ -667,33 +830,54 @@ export class DecdnClient {
       response.body?.cancel().catch(() => undefined);
       response = await this.fetchRetrying(plan.blobUrl, headers, opts);
     }
-    // Only a window the caller asked for goes unhashed: whatever status the
-    // gateway answers a whole-body request with, its bytes must hash.
-    const whole = opts.range === undefined || response.status === 200;
-    const verified =
-      plan.verified === true && !whole ? "skipped" : plan.verified;
-    const length = response.headers.get("content-length");
+    // A plan is verified only for a whole body: whatever status the gateway
+    // answers it with, its bytes must hash. A range is never verified, and
+    // one answered with the whole body (a page the site rewrites, a proxy
+    // that drops `Range`) has the window cut from it here.
+    const range = opts.range;
+    const cut =
+      range !== undefined && response.status === 200 ? range : undefined;
     const guardOpts: Parameters<typeof guard>[1] = {};
-    if (verified === true && plan.hash !== undefined)
+    if (plan.verified === true && plan.hash !== undefined)
       guardOpts.hash = plan.hash;
-    // The manifest's size bounds a whole entry both ways, and a window holds
-    // at most what was asked for. Content-Length bounds a body from below
-    // only: a body decoded on the way can run past it.
-    if (whole && plan.length !== undefined) {
+    // The manifest's size bounds a whole entry both ways, and a `206` window
+    // holds at most what was asked for. An unencoded `Content-Length` bounds
+    // any other body from below, so one that ends short is `TRUNCATED`.
+    const length = bodyLength(response);
+    // A window past the end is refused, as the gateway refuses it with 416;
+    // an empty body is answered empty, as the gateway answers it.
+    if (
+      cut !== undefined &&
+      length !== undefined &&
+      length > 0 &&
+      cut.offset >= length
+    ) {
+      response.body?.cancel().catch(() => undefined);
+      throw pastEnd(cut.offset, length);
+    }
+    if (plan.length !== undefined) {
       guardOpts.length = plan.length;
       guardOpts.max = plan.length;
     } else {
-      if (length !== null && /^\d+$/.test(length))
-        guardOpts.length = Number(length);
-      if (!whole && opts.range?.length !== undefined)
-        guardOpts.max = opts.range.length;
+      if (length !== undefined) guardOpts.length = length;
+      if (range?.length !== undefined && cut === undefined)
+        guardOpts.max = range.length;
     }
     if (opts.signal !== undefined) guardOpts.signal = opts.signal;
+    const body = guard(response.body, guardOpts);
+    if (cut === undefined)
+      return new DecdnResponse(response, body, plan.verified, contentType);
+    const window: { offset: number; length?: number; size?: number } = {
+      offset: cut.offset,
+    };
+    if (cut.length !== undefined) window.length = cut.length;
+    if (length !== undefined) window.size = length;
     return new DecdnResponse(
       response,
-      guard(response.body, guardOpts),
-      verified,
+      slice(body, cut.offset, cut.length),
+      plan.verified,
       contentType,
+      window,
     );
   }
 

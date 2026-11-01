@@ -41,6 +41,18 @@ export async function send(
   }
 }
 
+/** `send`, with an answer that is not a success thrown as its `DecdnError`. */
+export async function sendOk(
+  fetch: Fetch,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const response = await send(fetch, url, init);
+  if (response.status < 200 || response.status > 299)
+    throw await errorOf(response);
+  return response;
+}
+
 function linkUri(link: string | null): string | undefined {
   if (link === null) return undefined;
   const m = /<(decdn:[^>]+)>\s*;\s*rel="?alternate"?/.exec(link);

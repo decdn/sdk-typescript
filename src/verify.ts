@@ -2,6 +2,7 @@
 // them as they go when the request named the bytes by hash, and ends with an
 // error instead of `done` when they do not hash to it, when fewer bytes arrive
 // than declared, or when more arrive than the body may hold.
+import { concat } from "./bytes.js";
 import { DecdnError } from "./errors.js";
 import { createBlake3 } from "./hash.js";
 
@@ -111,11 +112,59 @@ export async function collect(
     }
     parts.push(value);
   }
-  const out = new Uint8Array(total);
+  return concat(parts);
+}
+
+/** The error for a window from `offset` of a body of `size` bytes, as the gateway's 416 maps. */
+export function pastEnd(offset: number, size: number): DecdnError {
+  return new DecdnError(
+    "RANGE_NOT_SATISFIABLE",
+    `the range starts at ${offset}, past the ${size} bytes`,
+    { size },
+  );
+}
+
+/**
+ * The bytes of `body` from `offset`, at most `length` of them: the window a
+ * range asked for, cut from a whole body the gateway answered it with. A
+ * body that is not empty and ends at or before `offset` fails with
+ * `RANGE_NOT_SATISFIABLE`.
+ */
+export function slice(
+  body: ReadableStream<Uint8Array>,
+  offset: number,
+  length?: number,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  const end = length === undefined ? Infinity : offset + length;
   let at = 0;
-  for (const p of parts) {
-    out.set(p, at);
-    at += p.length;
-  }
-  return out;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      for (;;) {
+        if (at >= end) {
+          controller.close();
+          // The window is whole: the rest of the body is not wanted.
+          reader.cancel().catch(() => undefined);
+          return;
+        }
+        const chunk = await reader.read();
+        if (chunk.done) {
+          if (at > 0 && at <= offset) controller.error(pastEnd(offset, at));
+          else controller.close();
+          return;
+        }
+        const start = at;
+        at += chunk.value.length;
+        const from = Math.max(0, offset - start);
+        const to = Math.min(chunk.value.length, end - start);
+        if (to > from) {
+          controller.enqueue(chunk.value.subarray(from, to));
+          return;
+        }
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
 }

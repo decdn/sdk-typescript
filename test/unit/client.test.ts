@@ -185,11 +185,321 @@ describe("public context", () => {
     const page = bundle.entries.find((e) => e.path === "index.html");
     const r = await c.get(`decdn:${bundle.hash}/index.html`);
     expect(r.verified).toBe(true);
+    expect(r.contentType).toBe("text/html; charset=utf-8");
     expect(await r.text()).toContain("decdn:" + "ee".repeat(32));
     expect(paths(fake)).toEqual([
       `GET decdn.test/${bundle.hash}`,
       `GET decdn.test/${page?.hash}`,
     ]);
+    const css = await c.get(`decdn:${bundle.hash}/css/site.css`);
+    expect(css.contentType).toBe("text/css; charset=utf-8");
+    expect(await css.text()).toBe("a { color: red }");
+  });
+
+  it("reads the manifest with the URI's namespace hint", async () => {
+    const { fake, bundle } = publicFake();
+    fake.namespaced.set(bundle.hash, 9n);
+    const c = await open(fake);
+    const r = await c.get(`decdn:${bundle.hash}/a.txt?ns=9`);
+    expect(r.verified).toBe(true);
+    expect(await r.text()).toBe("abc");
+    expect(paths(fake)[0]).toBe(`GET decdn.test/${bundle.hash}?ns=9`);
+    const m = await c.manifest(`decdn:${bundle.hash}/?ns=9`);
+    expect(m.hash).toBe(bundle.hash);
+    expect((await c.resolve(`decdn:${bundle.hash}/?ns=9`)).hash).toBe(
+      bundle.hash,
+    );
+    expect(fake.seen).toHaveLength(2);
+    await rejects(c.manifest(bundle.hash), "NOT_FOUND");
+  });
+
+  it("reads a directory's index.html by the directory's path, as its site does", async () => {
+    const { fake } = publicFake();
+    const docs = fake.addBundle({ "docs/index.html": "<p>docs</p>" });
+    const c = await open(fake);
+    const r = await c.get(`decdn:${docs.hash}/docs`);
+    expect(r.verified).toBe(true);
+    expect(await r.text()).toBe("<p>docs</p>");
+    const off = await c.get(`decdn:${docs.hash}/docs`, { verify: false });
+    expect(await off.text()).toBe("<p>docs</p>");
+    await rejects(c.get(`decdn:${docs.hash}/doc`), "NOT_FOUND");
+    const index = docs.entries.find((e) => e.path === "docs/index.html");
+    expect((await c.head(`decdn:${docs.hash}/docs`)).hash).toBe(index?.hash);
+    expect((await c.resolve(`decdn:${docs.hash}/docs`)).entry).toEqual(index);
+  });
+
+  it("cuts the window from a whole body the gateway answers a range with", async () => {
+    const { fake, bundle } = publicFake();
+    const c = await open(fake);
+    // A site rewrites a page as it streams, so it answers a range whole.
+    const page = await c.get(`decdn:${bundle.hash}/index.html`, {
+      range: { offset: 3, length: 2 },
+    });
+    expect(page.status).toBe(200);
+    expect(page.verified).toBe("skipped");
+    expect(await page.text()).toBe("hi");
+    const ignoring = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: (input, init) => {
+        const headers = new Headers(init?.headers);
+        headers.delete("range");
+        return fake.fetch(input, { ...init, headers });
+      },
+    });
+    const r = await ignoring.get(`decdn:${bundle.hash}/dir%20one/b.bin`, {
+      range: { offset: 2, length: 3 },
+    });
+    expect(r.status).toBe(200);
+    expect(r.contentRange).toEqual({ offset: 2, length: 3, size: 8 });
+    expect(r.contentLength).toBe(3);
+    expect([...(await r.bytes())]).toEqual([3, 4, 5]);
+    const tail = await ignoring.get(`decdn:${bundle.hash}/dir%20one/b.bin`, {
+      range: { offset: 6 },
+    });
+    expect(tail.contentRange).toEqual({ offset: 6, length: 2, size: 8 });
+    expect([...(await tail.bytes())]).toEqual([7, 8]);
+  });
+
+  it("refuses a window past the end of a whole body, as the gateway's 416", async () => {
+    const { fake, bundle } = publicFake();
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: (input, init) => {
+        const headers = new Headers(init?.headers);
+        headers.delete("range");
+        return fake.fetch(input, { ...init, headers });
+      },
+    });
+    const e = await rejects(
+      c.get(`decdn:${bundle.hash}/dir%20one/b.bin`, { range: { offset: 8 } }),
+      "RANGE_NOT_SATISFIABLE",
+    );
+    expect(e.size).toBe(8);
+    // A rewritten page streams with no length: the window has its offset
+    // alone, and one past the end fails as the body ends.
+    const page = await c.get(`decdn:${bundle.hash}/index.html`, {
+      range: { offset: 3 },
+    });
+    expect(page.contentRange).toEqual({ offset: 3 });
+    expect(page.contentLength).toBeUndefined();
+    const past = await c.get(`decdn:${bundle.hash}/index.html`, {
+      range: { offset: 10_000 },
+    });
+    await rejects(past.bytes(), "RANGE_NOT_SATISFIABLE");
+  });
+
+  it("answers a range of an empty whole body empty", async () => {
+    const { fake, bundle } = publicFake();
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: () =>
+        Promise.resolve(
+          new Response(new Uint8Array(), {
+            headers: { "content-length": "0" },
+          }),
+        ),
+    });
+    const r = await c.get(`decdn:${bundle.hash}/dir%20one/b.bin`, {
+      range: { offset: 5, length: 2 },
+    });
+    expect(r.contentLength).toBe(0);
+    expect(r.contentRange).toEqual({ offset: 5, length: 0, size: 0 });
+    expect(await r.bytes()).toEqual(new Uint8Array());
+  });
+
+  it("fails a whole body that ends before its window with TRUNCATED", async () => {
+    const { fake, bundle } = publicFake();
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: () =>
+        Promise.resolve(
+          new Response(new Uint8Array([1, 2, 3, 4]), {
+            headers: { "content-length": "8" },
+          }),
+        ),
+    });
+    const uri = `decdn:${bundle.hash}/dir%20one/b.bin`;
+    const short = await c.get(uri, { range: { offset: 2, length: 4 } });
+    await rejects(short.bytes(), "TRUNCATED");
+    // A window that ends before the body does is whole.
+    const head = await c.get(uri, { range: { offset: 0, length: 2 } });
+    expect([...(await head.bytes())]).toEqual([1, 2]);
+  });
+
+  it("drops a manifest read every caller gave up on", async () => {
+    const { fake, bundle } = publicFake();
+    const signals: AbortSignal[] = [];
+    let stall = true;
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: (input, init) => {
+        if (!stall) return fake.fetch(input, init);
+        const signal = init?.signal;
+        if (signal) signals.push(signal);
+        return new Promise((_, reject) =>
+          signal?.addEventListener("abort", () => reject(signal.reason)),
+        );
+      },
+    });
+    const a = new AbortController();
+    const b = new AbortController();
+    const first = c.manifest(bundle.hash, a.signal);
+    const second = c.manifest(bundle.hash, b.signal);
+    a.abort(new Error("a"));
+    await expect(first).rejects.toThrow("a");
+    expect(signals[0]?.aborted).toBe(false);
+    b.abort(new Error("b"));
+    await expect(second).rejects.toThrow("b");
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals).toHaveLength(1);
+    stall = false;
+    expect((await c.manifest(bundle.hash)).hash).toBe(bundle.hash);
+  });
+
+  /** A client whose fetches stall until `release`, recording each one's signal. */
+  async function stalling(fake: FakeGateway, cacheSize?: number) {
+    const signals: AbortSignal[] = [];
+    const waiting: (() => void)[] = [];
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      ...(cacheSize === undefined ? {} : { manifestCacheSize: cacheSize }),
+      fetch: (input, init) => {
+        const signal = init?.signal ?? new AbortController().signal;
+        signals.push(signal);
+        return new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason));
+          waiting.push(
+            () => void fake.fetch(input, init).then(resolve, reject),
+          );
+        });
+      },
+    });
+    const release = () => waiting.splice(0).forEach((go) => go());
+    return { c, signals, release };
+  }
+
+  it("starts a fresh manifest read after an abort, and keeps the old one for its waiters", async () => {
+    const { fake, bundle } = publicFake();
+    const { c, signals, release } = await stalling(fake);
+    const a = new AbortController();
+    const first = c.manifest(bundle.hash, a.signal);
+    const waiter = c.manifest(bundle.hash);
+    a.abort(new Error("a"));
+    await expect(first).rejects.toThrow("a");
+    const fresh = c.manifest(bundle.hash);
+    expect(signals).toHaveLength(2);
+    expect(signals[0]?.aborted).toBe(false);
+    release();
+    expect((await waiter).hash).toBe(bundle.hash);
+    const m = await fresh;
+    expect(await c.manifest(bundle.hash)).toBe(m);
+    expect(signals).toHaveLength(2);
+  });
+
+  it("keeps a settled manifest cached when a later caller aborts", async () => {
+    const { fake, bundle } = publicFake();
+    const c = await open(fake);
+    const m = await c.manifest(bundle.hash);
+    const late = new AbortController();
+    const pending = c.manifest(bundle.hash, late.signal);
+    late.abort();
+    await pending.catch(() => undefined);
+    expect(await c.manifest(bundle.hash)).toBe(m);
+    expect(fake.seen).toHaveLength(1);
+  });
+
+  it("leaves a newer read of a key alone when an evicted one is abandoned", async () => {
+    const { fake, bundle } = publicFake();
+    const other = fake.addBundle({ "b.txt": "b" });
+    const { c, signals, release } = await stalling(fake, 1);
+    const a = new AbortController();
+    const evicted = c.manifest(bundle.hash, a.signal);
+    void c.manifest(other.hash);
+    const newer = c.manifest(bundle.hash);
+    a.abort(new Error("a"));
+    await expect(evicted).rejects.toThrow("a");
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[2]?.aborted).toBe(false);
+    release();
+    const m = await newer;
+    expect(await c.manifest(bundle.hash)).toBe(m);
+    expect(signals).toHaveLength(3);
+  });
+
+  it("sends nothing for a caller that has already given up", async () => {
+    const { fake, bundle } = publicFake();
+    const c = await open(fake);
+    const signal = AbortSignal.abort(new Error("gone"));
+    await expect(c.manifest(bundle.hash, signal)).rejects.toThrow("gone");
+    await expect(
+      c.get(`decdn:${bundle.hash}/a.txt`, { signal }),
+    ).rejects.toThrow("gone");
+    expect(fake.seen).toHaveLength(0);
+  });
+
+  it("takes a body shorter than its Content-Length when it was decoded on the way", async () => {
+    const { fake, blob } = publicFake();
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: () =>
+        Promise.resolve(
+          new Response("abc", {
+            headers: { "content-length": "25", "content-encoding": "gzip" },
+          }),
+        ),
+    });
+    const r = await c.get(`decdn:${blob}`, { verify: false });
+    expect(r.contentLength).toBeUndefined();
+    expect(await r.text()).toBe("abc");
+  });
+
+  it("still bounds an encoded entry by its manifest size", async () => {
+    const { fake, bundle } = publicFake();
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: async (input, init) => {
+        const r = await fake.fetch(input, init);
+        if (!String(input).endsWith("/a.txt")) return r;
+        return new Response("ab", {
+          headers: { "content-length": "25", "content-encoding": "gzip" },
+        });
+      },
+    });
+    const r = await c.get(`decdn:${bundle.hash}/a.txt`);
+    expect(r.verified).toBe(true);
+    await rejects(r.bytes(), "TRUNCATED");
+  });
+
+  it("checks and normalises a URI given as an object", async () => {
+    const { fake, blob, bundle } = publicFake();
+    const c = await open(fake);
+    const r = await c.get({ hash: blob.toUpperCase(), kind: "blob" });
+    expect(r.verified).toBe(true);
+    expect(await r.text()).toBe("other bytes");
+    await rejects(c.get({ hash: "ab", kind: "blob" }), "BAD_URI");
+    await rejects(c.get({ hash: bundle.hash, kind: "entry" }), "BAD_URI");
+    await rejects(
+      c.get({ hash: bundle.hash, kind: "entry", path: "../a.txt" }),
+      "BAD_URI",
+    );
+    await rejects(
+      c.get({ hash: blob, kind: "blob", namespace: 0n }),
+      "BAD_URI",
+    );
+    // A hash is a hash: its delimiters do not become other parts of the URI.
+    await rejects(c.get({ hash: `${blob}?ns=9`, kind: "blob" }), "BAD_URI");
+    await rejects(
+      c.get({ hash: `${bundle.hash}/a.txt`, kind: "bundle" }),
+      "BAD_URI",
+    );
+    expect(fake.seen).toHaveLength(1);
+    const entry = await c.get({
+      hash: bundle.hash,
+      kind: "entry",
+      path: "dir one/b.bin",
+    });
+    expect(entry.verified).toBe(true);
+    expect([...(await entry.bytes())]).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
   it("fails a tampered entry with HASH_MISMATCH", async () => {
@@ -422,7 +732,7 @@ describe("public context", () => {
       expect(await r.text()).toBe("abc");
       const entry = bundle.entries.find((e) => e.path === "a.txt");
       expect(paths(fake)).toEqual([
-        `GET decdn.test/${bundle.hash}`,
+        `GET decdn.test/${bundle.hash}?ns=9`,
         `GET 9.${hashToBase32(bundle.hash)}.decdn.test/a.txt`,
         `GET decdn.test/${entry?.hash}?ns=9`,
       ]);
@@ -681,6 +991,25 @@ describe("loopback context", () => {
     expect(fake.seen[0]?.headers.get("x-decdn-host")).toBe("example.com");
   });
 
+  it("refuses content without the token, before any request", async () => {
+    const { fake, bundle } = loopbackFake();
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: fake.fetch,
+    });
+    await rejects(c.get(`decdn:${bundle.hash}/index.html`), "CONFIG");
+    await rejects(c.manifest(bundle.hash), "CONFIG");
+    await rejects(c.head(`decdn:${bundle.hash}/a.txt`), "CONFIG");
+    expect(fake.seen).toHaveLength(0);
+  });
+
+  it("does not read a directory's index.html by the directory's path, as the bare host does not", async () => {
+    const { fake } = loopbackFake();
+    const docs = fake.addBundle({ "docs/index.html": "<p>docs</p>" });
+    const c = await openLoop(fake);
+    await rejects(c.get(`decdn:${docs.hash}/docs`), "NOT_FOUND");
+  });
+
   it("fetches an entry on the bare host, byte-exact, and verifies it", async () => {
     const { fake, bundle } = loopbackFake();
     const c = await openLoop(fake);
@@ -770,6 +1099,51 @@ describe("site context", () => {
     ]);
   });
 
+  it("reads a directory of its own bundle by the directory's path", async () => {
+    const { fake } = publicFake();
+    const docs = fake.addBundle({ "docs/index.html": "<p>docs</p>" });
+    onSite(fake, `${hashToBase32(docs.hash)}.decdn.test`);
+    const c = await DecdnClient.open();
+    const r = await c.get("/docs");
+    expect(r.verified).toBe(true);
+    expect(r.contentType).toBe("text/html; charset=utf-8");
+    expect(await r.text()).toBe("<p>docs</p>");
+    expect(await (await c.get("/docs", { verify: false })).text()).toBe(
+      "<p>docs</p>",
+    );
+    const index = docs.entries.find((e) => e.path === "docs/index.html");
+    expect((await c.head(`decdn:${docs.hash}/docs`)).hash).toBe(index?.hash);
+  });
+
+  it("reads its own bundle under its host's namespace, whatever the call", async () => {
+    const { fake, bundle } = publicFake();
+    fake.namespaced.set(bundle.hash, 7n);
+    onSite(fake, `7.${hashToBase32(bundle.hash)}.decdn.test`);
+    const c = await DecdnClient.open();
+    const entry = bundle.entries.find((e) => e.path === "a.txt");
+    expect((await c.head(`decdn:${bundle.hash}/a.txt`)).hash).toBe(entry?.hash);
+    expect((await c.resolve(`decdn:${bundle.hash}/a.txt`)).entry).toEqual(
+      entry,
+    );
+    expect((await c.manifest(bundle.hash)).hash).toBe(bundle.hash);
+    expect(await (await c.get(`decdn:${bundle.hash}/a.txt`)).text()).toBe(
+      "abc",
+    );
+    expect(
+      fake.seen.filter((s) => s.url.includes(`/_decdn/${bundle.hash}`)),
+    ).toHaveLength(1);
+  });
+
+  it("leaves a URI object it is given unchanged", async () => {
+    const { fake, bundle } = publicFake();
+    onSite(fake, `7.${hashToBase32(bundle.hash)}.decdn.test`);
+    const c = await DecdnClient.open();
+    const uri = { hash: bundle.hash, kind: "entry" as const, path: "a.txt" };
+    expect(await (await c.get(uri)).text()).toBe("abc");
+    expect(uri).toEqual({ hash: bundle.hash, kind: "entry", path: "a.txt" });
+    expect(paths(fake)[0]).toContain(`/_decdn/${bundle.hash}?ns=7`);
+  });
+
   it("reads other content through /_decdn/", async () => {
     const { fake, bundle, blob } = publicFake();
     onSite(fake, `${hashToBase32(bundle.hash)}.decdn.test`);
@@ -802,7 +1176,7 @@ describe("site context", () => {
       "abc",
     );
     expect(paths(fake)).toEqual([
-      `GET 7.${label}.decdn.test/_decdn/${bundle.hash}`,
+      `GET 7.${label}.decdn.test/_decdn/${bundle.hash}?ns=7`,
       `GET 7.${label}.decdn.test/a.txt?v=2`,
       `GET 7.${label}.decdn.test/a.txt`,
     ]);

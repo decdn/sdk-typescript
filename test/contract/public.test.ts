@@ -52,10 +52,32 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
     expect(await r.bytes()).toEqual(c.files["a.txt"]);
   });
 
-  it("verifies a page by its entry hash, unrewritten", async () => {
+  it("verifies a page by its entry hash, unrewritten, typed as its site serves it", async () => {
     const r = await client.get(`decdn:${c.bundle}/index.html`);
     expect(r.verified).toBe(true);
+    expect(r.contentType).toBe("text/html; charset=utf-8");
     expect(await r.bytes()).toEqual(c.files["index.html"]);
+  });
+
+  it("reads a manifest and an entry with a namespace hint", async () => {
+    const m = await client.manifest(`decdn:${c.bundle}/?ns=7`);
+    expect(m.hash).toBe(c.bundle);
+    const r = await client.get(`decdn:${c.bundle}/a.txt?ns=7`);
+    expect(r.verified).toBe(true);
+    expect(await r.bytes()).toEqual(c.files["a.txt"]);
+  });
+
+  it("cuts a window from a page its site answers whole", async () => {
+    const whole = await (
+      await client.get(`decdn:${c.bundle}/index.html`, { verify: false })
+    ).bytes();
+    const r = await client.get(`decdn:${c.bundle}/index.html`, {
+      range: { offset: 1, length: 3 },
+    });
+    expect(r.status).toBe(200);
+    expect(r.verified).toBe("skipped");
+    expect(r.contentRange?.offset).toBe(1);
+    expect(await r.bytes()).toEqual(whole.subarray(1, 4));
   });
 
   it("rewrites the page on its site", async () => {
