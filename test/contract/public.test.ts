@@ -44,6 +44,19 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
     expect(blake3Hex(await r.bytes())).toBe(c.blob);
   });
 
+  it("lets any origin see that a body was decoded on the way", async () => {
+    const r = await c.fetch(`${c.gatewayUrl}/${c.blob}`, {
+      headers: { origin: "https://app.example" },
+    });
+    expect(r.status).toBe(200);
+    const exposed = (r.headers.get("access-control-expose-headers") ?? "")
+      .split(",")
+      .map((h) => h.trim().toLowerCase());
+    expect(exposed).toContain("content-encoding");
+    expect(exposed).toContain("content-length");
+    await r.arrayBuffer();
+  });
+
   it("verifies an entry fetched through its site", async () => {
     const r = await client.get(`decdn:${c.bundle}/a.txt`);
     expect(r.verified).toBe(true);
