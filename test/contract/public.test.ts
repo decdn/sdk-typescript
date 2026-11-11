@@ -45,9 +45,8 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
   });
 
   // decdn/decdn#2817, after v0.3.1.
-  it.runIf(shippedAfter("0.3.1"))(
-    "lets any origin see that a body was decoded on the way",
-    async () => {
+  if (shippedAfter("0.3.1")) {
+    it("lets any origin see that a body was decoded on the way", async () => {
       const r = await c.fetch(`${c.gatewayUrl}/${c.blob}`, {
         headers: { origin: "https://app.example" },
       });
@@ -58,8 +57,8 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
       expect(exposed).toContain("content-encoding");
       expect(exposed).toContain("content-length");
       await r.arrayBuffer();
-    },
-  );
+    });
+  }
 
   it("verifies an entry fetched through its site", async () => {
     const r = await client.get(`decdn:${c.bundle}/a.txt`);

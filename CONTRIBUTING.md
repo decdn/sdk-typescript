@@ -96,10 +96,11 @@ it writes (`DECDN_CONTRACT`) is a contract between that harness and this
 suite: a suite change must still accept what the floor's harness writes, or
 raise the floor.
 
-A contract test for gateway behaviour that no release carries yet runs under
-`it.runIf(shippedAfter("X.Y.Z"))`, with `X.Y.Z` the latest release without
-it. `--tag` names its release in `DECDN_CONTRACT_RELEASE`, so the test skips
-on older releases and runs against the fake and every `--ref`.
+A contract test for gateway behaviour that no release carries yet is declared
+inside `if (shippedAfter("X.Y.Z"))`, with `X.Y.Z` the latest release without
+it. `--tag` names its release in `DECDN_CONTRACT_RELEASE`, so an older release
+never collects the test, and the fake and every `--ref` run it. The test is
+left out rather than skipped: decdn's harness fails a run that skips a test.
 
 ## Releases
 

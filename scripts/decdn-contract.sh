@@ -126,7 +126,7 @@ if [[ -n "$TAG" ]]; then
   done
   [[ -x "$BIN/decdn" && -x "$BIN/decdn-node" ]] || die "the $TAG archives hold no decdn and decdn-node"
   export DECDN_CLI_BIN="$BIN/decdn" DECDN_NODE_BIN="$BIN/decdn-node"
-  # The suite skips behaviour that shipped after this release
+  # The suite leaves out tests of behaviour that shipped after this release
   # (`shippedAfter` in test/contract/fixture.ts).
   export DECDN_CONTRACT_RELEASE="$VERSION"
   unset GNUPGHOME
