@@ -46,7 +46,7 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
 
   // decdn/decdn#2817, after v0.3.1.
   if (shippedAfter("0.3.1")) {
-    it("lets any origin see that a body was decoded on the way", async () => {
+    it("lets any origin see a response's content encoding", async () => {
       const r = await c.fetch(`${c.gatewayUrl}/${c.blob}`, {
         headers: { origin: "https://app.example" },
       });
