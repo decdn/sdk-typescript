@@ -133,6 +133,26 @@ async function fake(
   return { ...file, close: listener.close };
 }
 
+/**
+ * Whether the gateway under test carries behaviour that decdn shipped after
+ * release `version` (`X.Y.Z`). `scripts/decdn-contract.sh --tag` names the
+ * release it runs in `DECDN_CONTRACT_RELEASE`; the fake and a gateway built
+ * from a ref (decdn's own contract run, `--ref`) carry everything.
+ */
+export function shippedAfter(version: string): boolean {
+  const release = process.env.DECDN_CONTRACT_RELEASE;
+  if (release === undefined || release === "") return true;
+  const parse = (v: string) =>
+    (v.split("-")[0] ?? "").split(".").map((n) => Number(n));
+  const [a, b] = [parse(release), parse(version)];
+  for (let i = 0; i < 3; i++) {
+    const [x, y] = [a[i] ?? 0, b[i] ?? 0];
+    if (x !== y) return x > y;
+  }
+  // The release itself, or a prerelease of it: the behaviour came later.
+  return false;
+}
+
 /** The gateway the contract suite runs against in `mode`, or `undefined` when a real run is in the other mode. */
 export async function contract(
   mode: "public" | "loopback",
