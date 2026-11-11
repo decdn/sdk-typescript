@@ -8,7 +8,7 @@ import {
   hashToBase32,
   type DecdnClient,
 } from "../../src/index.js";
-import { contract, type Contract } from "./fixture.js";
+import { contract, shippedAfter, type Contract } from "./fixture.js";
 
 let c: Contract;
 let client: DecdnClient;
@@ -43,6 +43,22 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
     expect(r.headers.get("x-content-type-options")).toBe("nosniff");
     expect(blake3Hex(await r.bytes())).toBe(c.blob);
   });
+
+  // decdn/decdn#2817, after v0.3.1.
+  if (shippedAfter("0.3.1")) {
+    it("lets any origin see a response's content encoding", async () => {
+      const r = await c.fetch(`${c.gatewayUrl}/${c.blob}`, {
+        headers: { origin: "https://app.example" },
+      });
+      expect(r.status).toBe(200);
+      const exposed = (r.headers.get("access-control-expose-headers") ?? "")
+        .split(",")
+        .map((h) => h.trim().toLowerCase());
+      expect(exposed).toContain("content-encoding");
+      expect(exposed).toContain("content-length");
+      await r.arrayBuffer();
+    });
+  }
 
   it("verifies an entry fetched through its site", async () => {
     const r = await client.get(`decdn:${c.bundle}/a.txt`);

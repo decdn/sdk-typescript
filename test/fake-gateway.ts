@@ -46,7 +46,7 @@ export interface Seen {
 }
 
 const EXPOSED =
-  "Content-Length, Content-Range, Accept-Ranges, Content-Type, Content-Disposition, ETag, Retry-After, Link";
+  "Content-Length, Content-Encoding, Content-Range, Accept-Ranges, Content-Type, Content-Disposition, ETag, Retry-After, Link";
 const REWRITTEN = /\.(html?|hxt|shtml|css)$/i;
 const TYPES: Record<string, string> = {
   html: "text/html",
