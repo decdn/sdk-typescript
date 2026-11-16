@@ -23,6 +23,7 @@ export default async function setup(
   project: TestProject,
 ): Promise<() => Promise<void>> {
   const gw = new FakeGateway({ mode: "public", host: "decdn.localhost" });
+  gw.fund();
   const blobText = "bytes a browser hashes as they stream\n";
   const blob = gw.addBlob(blobText);
   const tampered = gw.addBlob("bytes the gateway alters\n");

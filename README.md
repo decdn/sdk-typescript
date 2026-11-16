@@ -89,10 +89,10 @@ yarn add @decdn/client
 
 The client talks to one of two kinds of gateway:
 
-| Gateway                                                  | Where it runs                                                     | Who pays                                      |
-| -------------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------- |
-| Public (`decdn gateway --public-url https://decdn.link`) | Node or any web page                                              | The operator's pool, within a daily allowance |
-| Loopback (`decdn gateway`, `http://127.0.0.1:8484`)      | Node with the gateway token, or a page on one of its site origins | The first registered capability that can pay  |
+| Gateway                                                  | Where it runs                                                     | Who pays                                     |
+| -------------------------------------------------------- | ----------------------------------------------------------------- | -------------------------------------------- |
+| Public (`decdn gateway --public-url https://decdn.link`) | Node or any web page                                              | The first registered capability that can pay |
+| Loopback (`decdn gateway`, `http://127.0.0.1:8484`)      | Node with the gateway token, or a page on one of its site origins | The first registered capability that can pay |
 
 The gateway's HTTP contract is
 [appendix-gateway](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md);
@@ -136,6 +136,12 @@ part.contentRange; // { offset, length, size }
 
 The same code runs in a browser on any origin: a public gateway answers every
 origin, `Range` preflights included.
+
+A public gateway pays every pull with the capabilities its operator
+registered on its bare host (`GET /_delegate`, `PUT /_capability`), under the
+same rules as a [loopback gateway](#loopback-gateway-node). When none can pay,
+a request fails with `POOL_UNFUNDED` (503, `retryAfterSecs` and `fallbackUri`
+set); a blob its cache holds whole is still served.
 
 ## Loopback gateway (Node)
 
@@ -226,8 +232,8 @@ Every failure is a `DecdnError` with a stable `code`:
 
 | Code                                                                                                       | When                                                                                                        | Extra fields                    |
 | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `PAYMENT_REQUIRED`                                                                                         | 402: the allowance is spent, the entry does not fit what is left, or no loopback capability can pay         | `retryAfterSecs`, `fallbackUri` |
-| `POOL_UNFUNDED`                                                                                            | 503: the gateway's pool cannot pay                                                                          | `retryAfterSecs`, `fallbackUri` |
+| `PAYMENT_REQUIRED`                                                                                         | 402: no capability a loopback gateway holds can pay                                                         | `body`                          |
+| `POOL_UNFUNDED`                                                                                            | 503: nothing a public gateway holds can pay right now                                                       | `retryAfterSecs`, `fallbackUri` |
 | `RANGE_NOT_SATISFIABLE`                                                                                    | 416                                                                                                         | `size`                          |
 | `CONFLICT`                                                                                                 | 409: a pointer `seq` that is not newer; a capability for a key not held, or a second from one pool on a key | `seq`                           |
 | `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `UPSTREAM`, `PAYLOAD_TOO_LARGE`, `UNPROCESSABLE` | 404, 401, 403, 429, 502, 413, 422                                                                           | `status`, `body`                |

@@ -80,6 +80,7 @@ describe("pointer EIP-712", () => {
 describe("pointer.set", () => {
   function gateway() {
     const fake = new FakeGateway({ mode: "public" });
+    fake.fund();
     fake.pointerDomain = domain;
     fake.owners.set(pointer.namespace, fixture.address.toLowerCase());
     return fake;

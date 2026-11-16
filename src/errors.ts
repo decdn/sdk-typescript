@@ -1,8 +1,8 @@
 /** What went wrong, as a stable code a caller can branch on. */
 export type DecdnErrorCode =
-  /** 402: the gateway's allowance is spent, or the content does not fit what is left, or no capability a loopback gateway holds can pay. */
+  /** 402: no capability a loopback gateway holds can pay for a pull. */
   | "PAYMENT_REQUIRED"
-  /** 503: the gateway's pool cannot pay. */
+  /** 503: nothing a public gateway holds can pay for a pull right now. */
   | "POOL_UNFUNDED"
   /** 404. */
   | "NOT_FOUND"

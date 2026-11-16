@@ -1,6 +1,6 @@
 // The fetch wrapper: every non-2xx answer of the gateway becomes a
 // `DecdnError` with the fields its contract carries (Retry-After, the
-// `Link: <decdn:…>; rel="alternate"` fallback, the 402/503 JSON body, the
+// `Link: <decdn:…>; rel="alternate"` fallback, the 503 JSON body, the
 // 416 size, the pointer 409 `seq`).
 import { DecdnError, type DecdnErrorCode } from "./errors.js";
 

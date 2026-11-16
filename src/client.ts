@@ -1,7 +1,8 @@
 // The client: one of three contexts over a `decdn gateway`.
 //
 // - `public`: a gateway with `--public-url`; blobs from the bare host, entries
-//   from their site host, every request paid by the operator.
+//   from their site host, every pull paid by the first capability the
+//   gateway holds that can pay.
 // - `loopback`: the local gateway; content on the bare host with its token,
 //   paid by the first capability the gateway holds that can pay. Its
 //   `/_delegate` and `/_capability` API takes no token.

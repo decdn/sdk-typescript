@@ -109,6 +109,18 @@ async function fake(
     blobBytes: Buffer.from(blobBytes).toString("hex"),
   };
   if (mode === "public") {
+    // As decdn's harness does: a capability on the pending key, registered
+    // through the bare host's API before the suite runs.
+    const res = await gw.fetch(`${gw.url}/_delegate`);
+    const { address } = (await res.json()) as { address: string };
+    const put = await gw.fetch(`${gw.url}/_capability`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        capability: dcap({ pool: `0x${"c0".repeat(32)}`, signer: address }),
+      }),
+    });
+    if (put.status !== 201) throw new Error(await put.text());
     gw.pointerDomain = {
       chainId: pointerFixture.chainId,
       publisherRegistry: pointerFixture.publisherRegistry,
