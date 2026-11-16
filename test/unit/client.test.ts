@@ -89,17 +89,12 @@ describe("DecdnClient.open", () => {
         await DecdnClient.open({
           gatewayUrl: "https://gw.example",
           token: TOKEN,
-          host: "example.com",
         })
       ).context,
     ).toBe("loopback");
   });
 
-  it("refuses a token without a host, and no gateway outside a site page", async () => {
-    await rejects(
-      DecdnClient.open({ gatewayUrl: "http://127.0.0.1:8484", token: TOKEN }),
-      "CONFIG",
-    );
+  it("refuses no gateway outside a site page, and a URL that does not parse", async () => {
     await rejects(DecdnClient.open({}), "CONFIG");
     await rejects(DecdnClient.open({ gatewayUrl: "not a url" }), "CONFIG");
   });
@@ -964,31 +959,32 @@ describe("loopback context", () => {
     const fake = new FakeGateway({ mode: "loopback", token: TOKEN });
     const bundle = fake.addBundle({ "a.txt": "abc", "index.html": "<p>x</p>" });
     const blob = fake.addBlob("loop bytes");
-    fake.scopes.push("example.com");
+    fake.capabilities.push({
+      signer: "0x00000000000000000000000000000000000000a1",
+      pool: `0x${"11".repeat(32)}`,
+      cap: 10_000_000n,
+      expiry: 1_900_000_000n,
+      spent: false,
+    });
     return { fake, bundle, blob };
   }
 
-  async function openLoop(
-    fake: FakeGateway,
-    token = TOKEN,
-    host = "example.com",
-  ) {
+  async function openLoop(fake: FakeGateway, token = TOKEN) {
     return DecdnClient.open({
       gatewayUrl: fake.url,
       token,
-      host,
       fetch: fake.fetch,
     });
   }
 
-  it("sends the token and host and verifies a blob", async () => {
+  it("sends the token alone and verifies a blob", async () => {
     const { fake, blob } = loopbackFake();
     const c = await openLoop(fake);
     const r = await c.get(`decdn:${blob}`);
     expect(r.verified).toBe(true);
     expect(await r.text()).toBe("loop bytes");
     expect(fake.seen[0]?.headers.get("x-decdn-token")).toBe(TOKEN);
-    expect(fake.seen[0]?.headers.get("x-decdn-host")).toBe("example.com");
+    expect(fake.seen[0]?.headers.get("x-decdn-host")).toBeNull();
   });
 
   it("refuses content without the token, before any request", async () => {
@@ -1022,17 +1018,20 @@ describe("loopback context", () => {
     ]);
   });
 
-  it("maps a wrong token to UNAUTHORIZED and an uncovered host to PAYMENT_REQUIRED", async () => {
+  it("maps a wrong token to UNAUTHORIZED and no usable capability to PAYMENT_REQUIRED", async () => {
     const { fake, blob } = loopbackFake();
     await rejects(
       (await openLoop(fake, "00".repeat(32))).get(`decdn:${blob}`),
       "UNAUTHORIZED",
     );
+    fake.capabilities.splice(0);
     const e = await rejects(
-      (await openLoop(fake, TOKEN, "other.org")).get(`decdn:${blob}`),
+      (await openLoop(fake)).get(`decdn:${blob}`),
       "PAYMENT_REQUIRED",
     );
-    expect(e.body).toBe("no capability covers other.org");
+    expect(e.body).toBe(
+      "the gateway holds no capability that can pay: register one with PUT /_capability",
+    );
     expect(e.fallbackUri).toBeUndefined();
   });
 
@@ -1053,7 +1052,6 @@ describe("loopback context", () => {
     const c = await DecdnClient.open({
       gatewayUrl: fake.url,
       token: TOKEN,
-      host: "example.com",
       fetch: async (input, init) => {
         const r = await fake.fetch(input, init);
         if (!String(input).endsWith("/a.txt")) return r;
@@ -1199,17 +1197,13 @@ describe("site context", () => {
     ]);
   });
 
-  it("opens a loopback gateway named by URL, for its delegate API", async () => {
+  it("opens a loopback gateway named by URL, for its delegate API, even on a site page", async () => {
     const fake = new FakeGateway({ mode: "loopback", token: TOKEN });
     const page = `http://${hashToBase32("ab".repeat(32))}.localhost:8484`;
     vi.stubGlobal("location", new URL(`${page}/`));
     const c = await DecdnClient.open({
       gatewayUrl: fake.url,
-      fetch: (input, init) =>
-        fake.fetch(input, {
-          ...init,
-          headers: { ...(init?.headers as object), origin: page },
-        }),
+      fetch: fake.fetch,
     });
     expect(c.context).toBe("loopback");
     expect(c.origin).toBe(new URL(fake.url).origin);
@@ -1223,14 +1217,10 @@ describe("site context", () => {
     const withToken = await DecdnClient.open({
       gatewayUrl: "http://gw.test",
       token: TOKEN,
-      host: "example.com",
     });
     expect(withToken.context).toBe("loopback");
     expect(withToken.origin).toBe("http://gw.test");
-    const tokenOnly = await DecdnClient.open({
-      token: TOKEN,
-      host: "example.com",
-    });
+    const tokenOnly = await DecdnClient.open({ token: TOKEN });
     expect(tokenOnly.context).toBe("site");
   });
 

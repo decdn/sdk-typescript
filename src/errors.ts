@@ -1,6 +1,6 @@
 /** What went wrong, as a stable code a caller can branch on. */
 export type DecdnErrorCode =
-  /** 402: the gateway's allowance is spent, or the content does not fit what is left, or no capability covers the host. */
+  /** 402: the gateway's allowance is spent, or the content does not fit what is left, or no capability a loopback gateway holds can pay. */
   | "PAYMENT_REQUIRED"
   /** 503: the gateway's pool cannot pay. */
   | "POOL_UNFUNDED"
@@ -20,7 +20,7 @@ export type DecdnErrorCode =
   | "UPSTREAM"
   /** 413. */
   | "PAYLOAD_TOO_LARGE"
-  /** 409: a pointer `seq` that is not newer, or a capability already registered. */
+  /** 409: a pointer `seq` that is not newer; a capability for a key the gateway does not hold, or for a key that already holds one from its pool. */
   | "CONFLICT"
   /** 422. */
   | "UNPROCESSABLE"

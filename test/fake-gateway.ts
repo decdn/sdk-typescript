@@ -144,14 +144,32 @@ const CHUNK_GROUP_BYTES = 16 * 1024;
 /** What a raw blob's size proof spends of the allowance: one chunk group. */
 const PROOF_BYTES = CHUNK_GROUP_BYTES;
 
-/** A capability registered for a loopback delegate. */
-interface Registered {
+/**
+ * How long before its expiry a loopback gateway stops paying with a
+ * capability, and refuses to register it: one redeem interval and 120 s.
+ */
+export const EXPIRY_MARGIN_SECS = 420n;
+
+/** A loopback gateway's 402 for content it must pull with no usable capability. */
+export const NO_CAPABILITY =
+  "the gateway holds no capability that can pay: register one with PUT /_capability\n";
+
+/** The `error` of a public gateway's 503 when nothing can pay. */
+const CANNOT_PAY = "the gateway cannot pay right now";
+
+/** A capability a loopback gateway holds. */
+export interface Registered {
+  /** Lowercase `0x` address of the key it was issued to. */
   signer: string;
+  /** Lowercase `0x` + 64 hex. */
   pool: string;
-  scope: string;
-  origin: string | null;
   cap: bigint;
   expiry: bigint;
+  spent: boolean;
+}
+
+function nowSecs(): bigint {
+  return BigInt(Math.floor(Date.now() / 1000));
 }
 
 /** The EIP-55 spelling of a lowercase `0x` address, as the gateway writes addresses. */
@@ -184,13 +202,21 @@ export class FakeGateway {
   readonly partial = new Set<string>();
   /** Hashes only the nodes of one namespace hold: found with that `?ns=` hint alone. */
   readonly namespaced = new Map<string, bigint>();
-  /** Loopback capability scopes registered: `example.com`, `*.example.com`, `*`. */
-  readonly scopes: string[] = [];
   /** Namespace pointers: namespace id → bundle hash. */
   readonly pointers = new Map<bigint, string>();
   readonly seen: Seen[] = [];
-  /** Loopback delegates by lowercase address, with the capability registered for each. */
-  readonly delegates = new Map<string, Registered | undefined>();
+  /** The loopback gateway's one pending delegate key, lowercase: no capability has claimed it. */
+  pending?: string;
+  /** Loopback delegate keys a capability has claimed, lowercase. */
+  readonly keys = new Set<string>();
+  /** Loopback capabilities in registration order: the order they pay in. */
+  readonly capabilities: Registered[] = [];
+  /** Pools (lowercase) whose pulls stop for funding: a capability on one is spent when it next pays. */
+  readonly drained = new Set<string>();
+  /** The capability that paid each loopback content request, in order. */
+  readonly paid: Registered[] = [];
+  /** Blobs a loopback gateway's paid pulls delivered whole: its cache serves them with no capability. */
+  readonly cached = new Set<string>();
   /** The deployment pointers are verified on (public). */
   pointerDomain?: PointerDomain;
   /** Namespace owners on that deployment, lowercase. */
@@ -407,15 +433,23 @@ export class FakeGateway {
     return req.headers.get("x-decdn-token") === this.token;
   }
 
-  private covers(host: string): boolean {
-    const name = host.split(":")[0] ?? host;
-    return this.scopes.some(
-      (s) =>
-        s === "*" ||
-        s === name ||
-        (s.startsWith("*.") &&
-          (name === s.slice(2) || name.endsWith(s.slice(1)))),
-    );
+  /**
+   * The capability that pays a loopback content request: the first held one
+   * that is not spent and not inside the expiry margin. A pull that stops for
+   * funding on one retires it, and the next takes the request.
+   */
+  private payer(): Registered | undefined {
+    const horizon = nowSecs() + EXPIRY_MARGIN_SECS;
+    for (const r of this.capabilities) {
+      if (r.spent || r.expiry <= horizon) continue;
+      if (this.drained.has(r.pool)) {
+        r.spent = true;
+        continue;
+      }
+      this.paid.push(r);
+      return r;
+    }
+    return undefined;
   }
 
   private async bare(req: Request, url: URL): Promise<Response> {
@@ -454,11 +488,15 @@ export class FakeGateway {
       if (req.method === "HEAD") return this.headBlob(uri);
       return this.serve(uri, "bare", req.headers.get("range"));
     }
-    const pageHost = req.headers.get("x-decdn-host");
-    if (pageHost === null) return text(401, "page host required\n");
-    if (!this.covers(pageHost.toLowerCase()))
-      return text(402, `no capability covers ${pageHost.toLowerCase()}\n`);
-    return this.serve(uri, "bare", req.headers.get("range"));
+    const range = req.headers.get("range");
+    // A blob the cache holds whole is served at no cost.
+    if (uri.kind === "blob" && this.cached.has(uri.hash))
+      return this.serve(uri, "bare", range);
+    if (this.payer() === undefined) return text(402, NO_CAPABILITY);
+    const response = await this.serve(uri, "bare", range);
+    if (uri.kind === "blob" && response.status === 200)
+      this.cached.add(uri.hash);
+    return response;
   }
 
   /** The gateway API on the bare host, or `undefined` for a content path. */
@@ -468,56 +506,23 @@ export class FakeGateway {
       if (path === "/_pointer" && method === "PUT") return this.putPointer(req);
       return undefined;
     }
-    const origin = req.headers.get("origin");
-    const cors = (r: Response): Response => {
-      if (origin !== null) {
-        r.headers.set("access-control-allow-origin", origin);
-        r.headers.set("vary", "Origin");
-      }
-      return r;
-    };
-    if (method === "OPTIONS") {
-      if (path !== "/_delegate" && path !== "/_capability")
-        return text(403, "no cross-origin access\n");
-      if (origin === null) return text(403, "no Origin\n");
-      return cors(
-        text(204, "", {
-          "access-control-allow-methods": "GET, PUT",
-          "access-control-allow-headers": "content-type",
-          "access-control-max-age": "600",
-          "access-control-allow-private-network": "true",
-        }),
-      );
-    }
-    const page =
-      origin !== null && origin !== "null"
-        ? new URL(origin).hostname
-        : undefined;
-    const authorized = this.authorized(req);
+    // The API answers no cross-origin request, and takes no token.
+    if (method === "OPTIONS") return text(403, "no cross-origin access\n");
     if (path === "/_delegate" && method === "GET") {
-      if (!authorized && page === undefined)
-        return cors(text(403, "the token or a page origin is required\n"));
-      const address = `0x${Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
-      this.delegates.set(address, undefined);
-      return cors(json(200, { address: checksum(address) }));
+      if (this.pending === undefined) {
+        this.pending = `0x${Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      }
+      return json(200, { address: checksum(this.pending) });
     }
-    if (path === "/_capability" && method === "PUT") {
-      if (!authorized && page === undefined)
-        return cors(text(403, "the token or a page origin is required\n"));
-      return cors(
-        await this.register(req, authorized ? undefined : page, origin),
-      );
-    }
+    if (path === "/_capability" && method === "PUT") return this.register(req);
     if (path === "/_capability" && method === "GET") {
-      if (!authorized) return text(401, "token required\n");
-      const list = [...this.delegates.entries()].flatMap(([, r]) =>
-        r === undefined ? [] : [r],
-      );
+      const now = nowSecs();
+      const list = this.capabilities.filter((r) => r.expiry > now);
       return new Response(
         `[${list
           .map(
             (r) =>
-              `{"signer":"${checksum(r.signer)}","pool":"${r.pool}","scope":"${r.scope}","origin":${r.origin === null ? "null" : JSON.stringify(r.origin)},"cap":${r.cap},"expiry":${r.expiry},"spent":false}`,
+              `{"cap":${r.cap},"expiry":${r.expiry},"pool":"${r.pool}","signer":"${checksum(r.signer)}","spent":${r.spent}}`,
           )
           .join(",")}]`,
         { headers: { "content-type": "application/json" } },
@@ -528,66 +533,57 @@ export class FakeGateway {
     return undefined;
   }
 
-  private async register(
-    req: Request,
-    page: string | undefined,
-    origin: string | null,
-  ): Promise<Response> {
+  private async register(req: Request): Promise<Response> {
     const body = await req.text();
     if (body.length > MAX_BODY) return text(413, "body too large\n");
-    let request: { capability?: unknown; scope?: unknown };
+    let request: unknown;
     try {
-      request = JSON.parse(body) as typeof request;
+      request = JSON.parse(body);
     } catch (e) {
-      return text(
-        422,
-        `expected {"capability", "scope"}: ${(e as Error).message}\n`,
-      );
+      return text(422, `expected {"capability"}: ${(e as Error).message}\n`);
     }
     if (
-      typeof request.capability !== "string" ||
-      typeof request.scope !== "string"
+      typeof request !== "object" ||
+      request === null ||
+      Object.keys(request).some((k) => k !== "capability") ||
+      typeof (request as { capability?: unknown }).capability !== "string"
     ) {
-      return text(422, 'expected {"capability", "scope"}\n');
-    }
-    const scope = request.scope;
-    if (!/^(\*|(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*)$/.test(scope))
-      return text(422, `invalid scope ${scope}\n`);
-    if (page !== undefined && scope !== page && scope !== `*.${page}`) {
-      return text(403, `a page registers only a scope that covers itself\n`);
+      return text(422, 'expected {"capability"}\n');
     }
     let grant;
     try {
-      grant = parseCapability(request.capability.trim());
+      grant = parseCapability(
+        (request as { capability: string }).capability.trim(),
+      );
     } catch (e) {
       return text(422, `${(e as Error).message}\n`);
     }
-    if (grant.expiry <= BigInt(Math.floor(Date.now() / 1000)))
-      return text(422, "the capability has expired\n");
+    if (grant.spendingCap === 0n)
+      return text(422, "the capability's spending cap is 0\n");
+    if (grant.expiry <= nowSecs() + EXPIRY_MARGIN_SECS)
+      return text(422, "the capability expires too soon to pay\n");
     const signer = grant.signer.toLowerCase();
-    if (!this.delegates.has(signer)) {
+    const pool = grant.poolId.toLowerCase();
+    if (signer !== this.pending && !this.keys.has(signer)) {
       return text(
         409,
-        "the capability names no delegate this gateway is holding: get one from GET /_delegate\n",
+        "the capability names no key this gateway holds: get one from GET /_delegate\n",
       );
     }
-    if (this.delegates.get(signer) !== undefined) {
-      return text(
-        409,
-        "that delegate already holds a capability: get a new one from GET /_delegate\n",
-      );
+    if (this.capabilities.some((r) => r.signer === signer && r.pool === pool)) {
+      return text(409, "that key already holds a capability from this pool\n");
     }
-    this.delegates.set(signer, {
+    if (signer === this.pending) delete this.pending;
+    this.keys.add(signer);
+    this.capabilities.push({
       signer,
-      pool: grant.poolId,
-      scope,
-      origin: page === undefined ? null : origin,
+      pool,
       cap: grant.spendingCap,
       expiry: grant.expiry,
+      spent: false,
     });
-    this.scopes.push(scope);
     return new Response(
-      `{"signer":"${checksum(signer)}","scope":"${scope}","expiry":${grant.expiry}}`,
+      `{"expiry":${grant.expiry},"pool":"${pool}","signer":"${checksum(signer)}"}`,
       {
         status: 201,
         headers: { "content-type": "application/json" },
@@ -826,12 +822,7 @@ export class FakeGateway {
         );
       }
       if (this.unfunded.has(uri.hash))
-        return this.refusal(
-          503,
-          uri,
-          60,
-          "the gateway's pool cannot pay right now",
-        );
+        return this.refusal(503, uri, 60, CANNOT_PAY);
       if (bytes === undefined) return text(404, "not found\n");
       this.prove(uri.hash, bytes.length);
     }
@@ -863,12 +854,7 @@ export class FakeGateway {
       );
     }
     if (this.unfunded.has(uri.hash))
-      return this.refusal(
-        503,
-        uri,
-        60,
-        "the gateway's pool cannot pay right now",
-      );
+      return this.refusal(503, uri, 60, CANNOT_PAY);
     if (uri.kind === "blob") {
       // The gateway proves a raw blob's size before it answers (one chunk
       // group of the allowance, once), so a raw blob answers as a sized
@@ -921,12 +907,7 @@ export class FakeGateway {
         : text(404, `no entry ${path} in bundle\n`);
     }
     if (this.unfunded.has(entry.hash))
-      return this.refusal(
-        503,
-        uri,
-        60,
-        "the gateway's pool cannot pay right now",
-      );
+      return this.refusal(503, uri, 60, CANNOT_PAY);
     const bytes = this.blob(entry.hash, uri.namespace);
     if (bytes === undefined) return text(502, "the upstream pull failed\n");
     const name = path.split("/").pop() ?? path;

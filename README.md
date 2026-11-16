@@ -51,8 +51,8 @@ wallet library.
 - **Pages on a site origin.** `DecdnClient.open()` with no URL works from a
   page on a bundle's site origin (`<hash32>.<host>`); a namespace host needs
   `gatewayUrl`.
-- **Loopback gateways.** Mint delegate keys and register capabilities on a
-  local `decdn gateway`.
+- **Loopback gateways.** Read the pending delegate key and register
+  capabilities on a local `decdn gateway`.
 - **Namespace pointers.** Point a `PublisherRegistry` namespace at a bundle on
   a public gateway, signing EIP-712 typed data with a private key or a
   viem-style `signTypedData(typedData)` signer.
@@ -89,10 +89,10 @@ yarn add @decdn/client
 
 The client talks to one of two kinds of gateway:
 
-| Gateway                                                  | Where it runs                                                     | Who pays                                          |
-| -------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------- |
-| Public (`decdn gateway --public-url https://decdn.link`) | Node or any web page                                              | The operator's pool, within a daily allowance     |
-| Loopback (`decdn gateway`, `http://127.0.0.1:8484`)      | Node with the gateway token, or a page on one of its site origins | The capability registered for the requesting host |
+| Gateway                                                  | Where it runs                                                     | Who pays                                      |
+| -------------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------- |
+| Public (`decdn gateway --public-url https://decdn.link`) | Node or any web page                                              | The operator's pool, within a daily allowance |
+| Loopback (`decdn gateway`, `http://127.0.0.1:8484`)      | Node with the gateway token, or a page on one of its site origins | The first registered capability that can pay  |
 
 The gateway's HTTP contract is
 [appendix-gateway](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md);
@@ -105,6 +105,7 @@ Node.js 20.19 or later, and evergreen browsers.
 
 | `@decdn/client` | `decdn gateway`                                                                                                                                                                                   |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0.3             | v0.3.0 or later for browser pages and public gateways; a release after v0.3.1 for loopback gateways (pending-key capabilities)                                                                    |
 | 0.1             | v0.3.0 or later for browser pages and public gateways ([cross-origin reads](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md#cross-origin-reads)); any loopback gateway from Node |
 
 CI runs the contract suite against the floor and the latest decdn release, with
@@ -138,9 +139,10 @@ origin, `Range` preflights included.
 
 ## Loopback gateway (Node)
 
-A loopback gateway pays with a capability a pool owner issued to one of its
-delegate keys. Mint the delegate, have the owner assign it, and register it
-for the host your requests name:
+A loopback gateway pays with capabilities pool owners issued to its delegate
+keys. It holds one pending key at a time: `delegate()` names the same address
+until a capability claims it. Have the owner assign that address, and
+register the capability:
 
 ```ts
 import { DecdnClient } from "@decdn/client";
@@ -149,21 +151,24 @@ import { readLoopbackToken } from "@decdn/client/node";
 const client = await DecdnClient.open({
   gatewayUrl: "http://127.0.0.1:8484",
   token: await readLoopbackToken(), // ~/.decdn/gateway/token
-  host: "example.com", // sent as x-decdn-host
 });
 
 const { address } = await client.loopback.delegate();
 // The pool owner: decdn pool assign --pool <id> --signer <address> ...
-await client.loopback.registerCapability({
-  capability: "dcap1:...",
-  scope: "example.com",
-});
+await client.loopback.registerCapability({ capability: "dcap1:..." });
+// → { signer, pool, expiry }
 
 const r = await client.get("decdn:<64 hex>");
 ```
 
-`client.loopback.capabilities()` lists what the gateway holds. Without a
-covering capability a request fails with `PAYMENT_REQUIRED`. A `dcap1:` token
+A key holds one capability per pool, and may hold capabilities from several
+pools. The gateway pays each request with the first capability, in
+registration order, that is not spent and not within 420 s of its expiry;
+`client.loopback.capabilities()` lists them in that order. With none that can
+pay, content the gateway must pull fails with `PAYMENT_REQUIRED`; a blob its
+cache holds whole is served at no cost. The gateway keeps its keys and
+capabilities in memory, so a restart loses them. The delegate and capability
+API takes no token and answers no cross-origin request. A `dcap1:` token
 decodes offline with `parseCapability`.
 
 The SDK does not start the gateway. Run it yourself (`decdn gateway`, or the
@@ -189,11 +194,8 @@ the host is recognised: `DecdnClient.open({ gatewayUrl: "https://decdn.link" })`
 The bundle there is whatever the pointer names, so the page's own paths are
 not verified and `manifest()` needs a hash.
 
-A page on a loopback site origin reaches the gateway's delegate and capability
-API with a second client on the gateway itself:
-`DecdnClient.open({ gatewayUrl: "http://127.0.0.1:8484" })`. A loopback
-`gatewayUrl` opens a `loopback` client from any page; without the token, which
-a page cannot send, it reaches that API alone: any call that reads content or
+A loopback `gatewayUrl` opens a `loopback` client. Without the token it
+reaches the delegate and capability API alone: any call that reads content or
 a manifest (`get`, `manifest`, and `head` or `resolve` of a bundle or entry)
 fails with `CONFIG` before any request.
 
@@ -224,10 +226,10 @@ Every failure is a `DecdnError` with a stable `code`:
 
 | Code                                                                                                       | When                                                                                                        | Extra fields                    |
 | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `PAYMENT_REQUIRED`                                                                                         | 402: the allowance is spent, the entry does not fit what is left, or no loopback capability covers the host | `retryAfterSecs`, `fallbackUri` |
+| `PAYMENT_REQUIRED`                                                                                         | 402: the allowance is spent, the entry does not fit what is left, or no loopback capability can pay         | `retryAfterSecs`, `fallbackUri` |
 | `POOL_UNFUNDED`                                                                                            | 503: the gateway's pool cannot pay                                                                          | `retryAfterSecs`, `fallbackUri` |
 | `RANGE_NOT_SATISFIABLE`                                                                                    | 416                                                                                                         | `size`                          |
-| `CONFLICT`                                                                                                 | 409: a pointer `seq` that is not newer, a capability already registered                                     | `seq`                           |
+| `CONFLICT`                                                                                                 | 409: a pointer `seq` that is not newer; a capability for a key not held, or a second from one pool on a key | `seq`                           |
 | `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `UPSTREAM`, `PAYLOAD_TOO_LARGE`, `UNPROCESSABLE` | 404, 401, 403, 429, 502, 413, 422                                                                           | `status`, `body`                |
 | `BAD_URI`                                                                                                  | A `decdn:` URI that does not parse, or 400                                                                  |                                 |
 | `HASH_MISMATCH`, `TRUNCATED`                                                                               | The body does not hash to its hash, or is shorter or longer than declared                                   |                                 |
@@ -272,8 +274,8 @@ are the deployment the gateway verifies against.
 | `client.resolve(uri)`                                                           | A URI's kind, hash, bare and site URLs, and its manifest entry (reads the manifest for a bundle or entry)                                                                                 |
 | `client.manifest(hashOrUri?, signal?)`                                          | A bundle's verified manifest, read with the URI's `?ns=` hint (a bare hash has none) and cached per client; on a site page, the page's own bundle under its host's namespace when omitted |
 | `client.siteUrl(uri)`, `client.namespaceUrl(ns)`                                | The site URL of a bundle or entry; the URL a namespace's pointer serves at (`https://<ns>.<host>/`). Neither makes a request                                                              |
-| `client.loopback.delegate()`                                                    | Mints a delegate key on a loopback gateway, held for 15 minutes unless a capability claims it                                                                                             |
-| `client.loopback.registerCapability({ capability, scope })`, `.capabilities()`  | Registers a `dcap1:` capability for a scope (`example.com`, `*.example.com` or `*`); lists the capabilities the gateway holds (needs the token)                                           |
+| `client.loopback.delegate()`                                                    | The loopback gateway's pending delegate key: the same address until a capability claims it                                                                                                |
+| `client.loopback.registerCapability({ capability })`, `.capabilities()`         | Registers a `dcap1:` capability issued to a key the gateway holds (`{ signer, pool, expiry }`); lists the capabilities the gateway holds, in the order it pays with them                  |
 | `client.pointer.set(args)`                                                      | Signs and publishes a namespace pointer on a public gateway                                                                                                                               |
 | `pointerTypedData`, `pointerSigningHash`, `signPointer`, `recoverPointerSigner` | The pointer's EIP-712 typed data and signing hash, its signature, and the signer a signature recovers to                                                                                  |
 | `parseUri`, `formatUri`                                                         | Parse and canonically format a `decdn:` URI, following the Rust client's grammar exactly (`BAD_URI` on anything it refuses)                                                               |
