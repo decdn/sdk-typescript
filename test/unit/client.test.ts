@@ -7,8 +7,6 @@ import {
 } from "../../src/index.js";
 import { FakeGateway } from "../fake-gateway.js";
 
-const TOKEN = "cd".repeat(32);
-
 /** A public gateway over a bundle and a blob, holding a capability unless `funded` is false. */
 function publicFake(funded = true) {
   const fake = new FakeGateway({ mode: "public" });
@@ -71,7 +69,7 @@ afterEach(() => {
 });
 
 describe("DecdnClient.open", () => {
-  it("picks the context from the gateway URL and token", async () => {
+  it("picks the context from the gateway URL", async () => {
     const { fake } = publicFake();
     expect((await open(fake)).context).toBe("public");
     const loop = new FakeGateway({ mode: "loopback" });
@@ -84,13 +82,8 @@ describe("DecdnClient.open", () => {
       ).context,
     ).toBe("loopback");
     expect(
-      (
-        await DecdnClient.open({
-          gatewayUrl: "https://gw.example",
-          token: TOKEN,
-        })
-      ).context,
-    ).toBe("loopback");
+      (await DecdnClient.open({ gatewayUrl: "https://gw.example" })).context,
+    ).toBe("public");
   });
 
   it("refuses no gateway outside a site page, and a URL that does not parse", async () => {
@@ -952,7 +945,7 @@ describe("public context", () => {
 
 describe("loopback context", () => {
   function loopbackFake() {
-    const fake = new FakeGateway({ mode: "loopback", token: TOKEN });
+    const fake = new FakeGateway({ mode: "loopback" });
     const bundle = fake.addBundle({ "a.txt": "abc", "index.html": "<p>x</p>" });
     const blob = fake.addBlob("loop bytes");
     fake.capabilities.push({
@@ -965,34 +958,70 @@ describe("loopback context", () => {
     return { fake, bundle, blob };
   }
 
-  async function openLoop(fake: FakeGateway, token = TOKEN) {
-    return DecdnClient.open({
-      gatewayUrl: fake.url,
-      token,
-      fetch: fake.fetch,
-    });
+  async function openLoop(fake: FakeGateway) {
+    return DecdnClient.open({ gatewayUrl: fake.url, fetch: fake.fetch });
   }
 
-  it("sends the token alone and verifies a blob", async () => {
+  it("sends no credential and verifies a blob", async () => {
     const { fake, blob } = loopbackFake();
     const c = await openLoop(fake);
     const r = await c.get(`decdn:${blob}`);
     expect(r.verified).toBe(true);
     expect(await r.text()).toBe("loop bytes");
-    expect(fake.seen[0]?.headers.get("x-decdn-token")).toBe(TOKEN);
     expect(fake.seen[0]?.headers.get("x-decdn-host")).toBeNull();
   });
 
-  it("refuses content without the token, before any request", async () => {
-    const { fake, bundle } = loopbackFake();
-    const c = await DecdnClient.open({
-      gatewayUrl: fake.url,
-      fetch: fake.fetch,
+  it("refuses a page on another site or origin, and a browser that sends no Sec-Fetch-Site", async () => {
+    const { fake, blob, bundle } = loopbackFake();
+    const get = (path: string, headers: Record<string, string>) =>
+      fake.fetch(`${fake.url}/${path}`, { headers, redirect: "manual" });
+    const refusals: [Record<string, string>, string][] = [
+      [
+        { "sec-fetch-site": "cross-site", origin: fake.url },
+        "a page on another site may not use the gateway\n",
+      ],
+      [
+        { origin: "https://app.example" },
+        "a page on another origin may not use the gateway\n",
+      ],
+      [
+        { "user-agent": "Mozilla/5.0" },
+        "a browser that sends no Sec-Fetch-Site may not use the gateway\n",
+      ],
+    ];
+    for (const [headers, body] of refusals) {
+      const r = await get(blob, headers);
+      expect(r.status, body).toBe(403);
+      expect(await r.text()).toBe(body);
+    }
+    const own = await get(blob, {
+      origin: fake.url,
+      "sec-fetch-site": "same-origin",
     });
-    await rejects(c.get(`decdn:${bundle.hash}/index.html`), "CONFIG");
-    await rejects(c.manifest(bundle.hash), "CONFIG");
-    await rejects(c.head(`decdn:${bundle.hash}/a.txt`), "CONFIG");
-    expect(fake.seen).toHaveLength(0);
+    expect(own.status).toBe(200);
+    const fromSite = await get(blob, {
+      origin: `http://7.${hashToBase32(bundle.hash)}.localhost:8484`,
+      "sec-fetch-site": "same-site",
+    });
+    expect(fromSite.status).toBe(200);
+    const noFetchSite = await get(blob, { origin: fake.url });
+    expect(await noFetchSite.text()).toBe(
+      "a browser that sends no Sec-Fetch-Site may not use the gateway\n",
+    );
+    const api = await get("_delegate", { origin: "https://app.example" });
+    expect(await api.text()).toBe(
+      "a page on another origin may not use the gateway\n",
+    );
+    const navigate = await get(`${bundle.hash}/a.txt`, {
+      "sec-fetch-site": "none",
+      "sec-fetch-mode": "navigate",
+    });
+    expect(navigate.status).toBe(302);
+    expect(navigate.headers.get("location")).toBe(
+      `http://${hashToBase32(bundle.hash)}.localhost:8484/a.txt`,
+    );
+    const sdk = await get(`${bundle.hash}/a.txt`, {});
+    expect(sdk.status).toBe(200);
   });
 
   it("does not read a directory's index.html by the directory's path, as the bare host does not", async () => {
@@ -1014,12 +1043,8 @@ describe("loopback context", () => {
     ]);
   });
 
-  it("maps a wrong token to UNAUTHORIZED and no usable capability to PAYMENT_REQUIRED", async () => {
+  it("maps no usable capability to PAYMENT_REQUIRED", async () => {
     const { fake, blob } = loopbackFake();
-    await rejects(
-      (await openLoop(fake, "00".repeat(32))).get(`decdn:${blob}`),
-      "UNAUTHORIZED",
-    );
     fake.capabilities.splice(0);
     const e = await rejects(
       (await openLoop(fake)).get(`decdn:${blob}`),
@@ -1047,7 +1072,6 @@ describe("loopback context", () => {
     const { fake, bundle } = loopbackFake();
     const c = await DecdnClient.open({
       gatewayUrl: fake.url,
-      token: TOKEN,
       fetch: async (input, init) => {
         const r = await fake.fetch(input, init);
         if (!String(input).endsWith("/a.txt")) return r;
@@ -1194,7 +1218,7 @@ describe("site context", () => {
   });
 
   it("opens a loopback gateway named by URL, for its delegate API, even on a site page", async () => {
-    const fake = new FakeGateway({ mode: "loopback", token: TOKEN });
+    const fake = new FakeGateway({ mode: "loopback" });
     const page = `http://${hashToBase32("ab".repeat(32))}.localhost:8484`;
     vi.stubGlobal("location", new URL(`${page}/`));
     const c = await DecdnClient.open({
@@ -1207,17 +1231,10 @@ describe("site context", () => {
     expect(paths(fake)).toEqual([`GET ${new URL(fake.url).host}/_delegate`]);
   });
 
-  it("opens the gateway a token names, and the site without a gateway URL", async () => {
+  it("opens the site without a gateway URL", async () => {
     const { fake, bundle } = publicFake();
     onSite(fake, `${hashToBase32(bundle.hash)}.decdn.test`);
-    const withToken = await DecdnClient.open({
-      gatewayUrl: "http://gw.test",
-      token: TOKEN,
-    });
-    expect(withToken.context).toBe("loopback");
-    expect(withToken.origin).toBe("http://gw.test");
-    const tokenOnly = await DecdnClient.open({ token: TOKEN });
-    expect(tokenOnly.context).toBe("site");
+    expect((await DecdnClient.open()).context).toBe("site");
   });
 
   it("does not take an arbitrary numeric subdomain for a namespace host", async () => {

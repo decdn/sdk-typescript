@@ -1,33 +1,27 @@
-// The SDK against a loopback gateway with its token: the fake by default,
-// the real binary when decdn's contract run runs this file with
-// DECDN_CONTRACT:
+// The SDK against a loopback gateway: the fake by default, the real binary
+// when decdn's contract run runs this file with DECDN_CONTRACT:
 // https://github.com/decdn/decdn/blob/main/crates/e2e/src/sdk_contract.rs
 // The tests run in order: the fixture's capability is issued to the
 // gateway's pending key, and content is refused until it is registered.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   blake3Hex,
-  DecdnClient,
   DecdnError,
+  hashToBase32,
   parseCapability,
+  type DecdnClient,
 } from "../../src/index.js";
 import pinnedCapability from "../fixtures/capability.json" with { type: "json" };
 import { contract, shippedAfter, type Contract } from "./fixture.js";
 
 let c: Contract;
 let client: DecdnClient;
-/** A client with no token: the API takes none. */
-let anonymous: DecdnClient;
 const run = await contract("loopback");
 
 beforeAll(async () => {
   if (run === undefined) return;
   c = run;
   client = await c.open();
-  anonymous = await DecdnClient.open({
-    gatewayUrl: c.gatewayUrl,
-    fetch: c.fetch,
-  });
 });
 
 afterAll(async () => {
@@ -46,16 +40,26 @@ async function failure(p: Promise<unknown>): Promise<DecdnError> {
 
 const grant = () => parseCapability(c.capability ?? "");
 
-// Pending-key capabilities ship after decdn v0.3.1. A release at or before
-// it speaks the scoped capability API this SDK does not, so the suite skips
-// against it; scripts/decdn-contract.sh leaves the loopback journey out of
-// those releases' runs, since their harness fails a skipped test.
+/** A raw request to the gateway's bare host, with `headers` and nothing else. */
+const raw = (path: string, init: RequestInit = {}) =>
+  c.fetch(`${c.gatewayUrl}${path}`, { redirect: "manual", ...init });
+
+const ANOTHER_SITE = "a page on another site may not use the gateway\n";
+const ANOTHER_ORIGIN = "a page on another origin may not use the gateway\n";
+const NO_FETCH_SITE =
+  "a browser that sends no Sec-Fetch-Site may not use the gateway\n";
+
+// Pending-key capabilities and the browser-header gate ship after decdn
+// v0.3.1. A release at or before it speaks the scoped, token-holding API
+// this SDK does not, so the suite skips against it; scripts/decdn-contract.sh
+// leaves the loopback journey out of those releases' runs, since their
+// harness fails a skipped test.
 describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
   "loopback gateway contract (pending-key capabilities, after decdn v0.3.1)",
   () => {
-    it("names its one pending key on every call, with no token", async () => {
-      const first = await anonymous.loopback.delegate();
-      const again = await anonymous.loopback.delegate();
+    it("names its one pending key on every call", async () => {
+      const first = await client.loopback.delegate();
+      const again = await client.loopback.delegate();
       expect(first.address).toMatch(/^0x[0-9a-fA-F]{40}$/);
       expect(again.address).toBe(first.address);
       expect(first.address.toLowerCase()).toBe(grant().signer.toLowerCase());
@@ -71,7 +75,7 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
     });
 
     it("refuses a registration with a field besides the capability", async () => {
-      const r = await c.fetch(`${c.gatewayUrl}/_capability`, {
+      const r = await raw("/_capability", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ capability: c.capability, scope: "*" }),
@@ -84,7 +88,7 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
       // The pinned grant's signer is no key the gateway holds; the gateway
       // checks the key before the chain.
       const e = await failure(
-        anonymous.loopback.registerCapability({
+        client.loopback.registerCapability({
           capability: pinnedCapability.token,
         }),
       );
@@ -92,7 +96,7 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
     });
 
     it("registers the capability, which claims the pending key", async () => {
-      const registered = await anonymous.loopback.registerCapability({
+      const registered = await client.loopback.registerCapability({
         capability: c.capability ?? "",
       });
       const g = grant();
@@ -105,13 +109,13 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
         pool: g.poolId.toLowerCase(),
         expiry: g.expiry,
       });
-      const next = await anonymous.loopback.delegate();
+      const next = await client.loopback.delegate();
       expect(next.address.toLowerCase()).not.toBe(g.signer.toLowerCase());
     });
 
-    it("lists the capability it holds, with no token", async () => {
+    it("lists the capability it holds", async () => {
       const g = grant();
-      const held = await anonymous.loopback.capabilities();
+      const held = await client.loopback.capabilities();
       const mine = held.find(
         (h) => h.signer.toLowerCase() === g.signer.toLowerCase(),
       );
@@ -139,9 +143,9 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
       expect(e.code).toBe("CONFLICT");
     });
 
-    it("answers no cross-origin request to its API", async () => {
+    it("answers no preflight to a page on another origin", async () => {
       for (const path of ["/_delegate", "/_capability"]) {
-        const r = await c.fetch(`${c.gatewayUrl}${path}`, {
+        const r = await raw(path, {
           method: "OPTIONS",
           headers: {
             origin: "https://app.example",
@@ -150,11 +154,11 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
         });
         expect(r.status, path).toBe(403);
         expect(r.headers.get("access-control-allow-origin"), path).toBeNull();
-        expect(await r.text(), path).toBe("no cross-origin access\n");
+        expect(await r.text(), path).toBe(ANOTHER_ORIGIN);
       }
     });
 
-    it("streams a blob with the token, verified", async () => {
+    it("streams a blob, verified", async () => {
       const r = await client.get(`decdn:${c.blob}`);
       expect(r.verified).toBe(true);
       expect(r.headers.get("access-control-allow-origin")).toBeNull();
@@ -183,11 +187,49 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
       expect(info.contentType).toBe("text/plain; charset=utf-8");
     });
 
-    it("refuses a wrong token", async () => {
-      const wrong = await c.open({ token: "00".repeat(32) });
-      expect((await failure(wrong.get(`decdn:${c.blob}`))).code).toBe(
-        "UNAUTHORIZED",
-      );
+    it("serves a request with no Sec-Fetch headers, no Origin and no browser agent", async () => {
+      const r = await raw(`/${c.blob}`);
+      expect(r.status).toBe(200);
+      expect(blake3Hex(new Uint8Array(await r.arrayBuffer()))).toBe(c.blob);
+    });
+
+    it("refuses a page on another site", async () => {
+      const r = await raw(`/${c.blob}`, {
+        headers: { "sec-fetch-site": "cross-site" },
+      });
+      expect(r.status).toBe(403);
+      expect(await r.text()).toBe(ANOTHER_SITE);
+    });
+
+    it("refuses a page on another origin, on content and on the API", async () => {
+      for (const path of [`/${c.blob}`, "/_delegate"]) {
+        const r = await raw(path, {
+          headers: { origin: "https://app.example" },
+        });
+        expect(r.status, path).toBe(403);
+        expect(await r.text(), path).toBe(ANOTHER_ORIGIN);
+      }
+    });
+
+    it("refuses a browser that sends no Sec-Fetch-Site", async () => {
+      const r = await raw(`/${c.blob}`, {
+        headers: { "user-agent": "Mozilla/5.0" },
+      });
+      expect(r.status).toBe(403);
+      expect(await r.text()).toBe(NO_FETCH_SITE);
+    });
+
+    it("sends a browser's navigation to an entry to its site", async () => {
+      const r = await raw(`/${c.bundle}/a.txt`, {
+        headers: { "sec-fetch-site": "none", "sec-fetch-mode": "navigate" },
+      });
+      expect(r.status).toBeGreaterThanOrEqual(300);
+      expect(r.status).toBeLessThan(400);
+      const location = new URL(r.headers.get("location") ?? "");
+      expect(location.hostname).toBe(`${hashToBase32(c.bundle)}.localhost`);
+      expect(location.port).toBe(new URL(c.gatewayUrl).port);
+      expect(location.pathname).toBe("/a.txt");
+      await r.arrayBuffer();
     });
   },
 );

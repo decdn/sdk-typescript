@@ -2,8 +2,8 @@
 // (https://github.com/decdn/decdn/blob/main/crates/cli/src/commands/gateway.rs):
 // `GET /_delegate` names the gateway's pending delegate key, `PUT /_capability`
 // registers a `dcap1:` capability issued to a key the gateway holds, and
-// `GET /_capability` lists the registered ones. None of them takes the token,
-// and none answers cross-origin, so a web page cannot call them.
+// `GET /_capability` lists the registered ones. None of them answers
+// cross-origin, so a web page cannot call them.
 import type { DecdnClient } from "./client.js";
 import { DecdnError } from "./errors.js";
 import { parseWithBigInts, sendOk } from "./http.js";

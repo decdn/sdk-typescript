@@ -89,10 +89,10 @@ yarn add @decdn/client
 
 The client talks to one of two kinds of gateway:
 
-| Gateway                                                  | Where it runs                                                     | Who pays                                     |
-| -------------------------------------------------------- | ----------------------------------------------------------------- | -------------------------------------------- |
-| Public (`decdn gateway --public-url https://decdn.link`) | Node or any web page                                              | The first registered capability that can pay |
-| Loopback (`decdn gateway`, `http://127.0.0.1:8484`)      | Node with the gateway token, or a page on one of its site origins | The first registered capability that can pay |
+| Gateway                                                  | Where it runs                              | Who pays                                     |
+| -------------------------------------------------------- | ------------------------------------------ | -------------------------------------------- |
+| Public (`decdn gateway --public-url https://decdn.link`) | Node or any web page                       | The first registered capability that can pay |
+| Loopback (`decdn gateway`, `http://127.0.0.1:8484`)      | Node, or a page on one of its site origins | The first registered capability that can pay |
 
 The gateway's HTTP contract is
 [appendix-gateway](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md);
@@ -152,12 +152,8 @@ register the capability:
 
 ```ts
 import { DecdnClient } from "@decdn/client";
-import { readLoopbackToken } from "@decdn/client/node";
 
-const client = await DecdnClient.open({
-  gatewayUrl: "http://127.0.0.1:8484",
-  token: await readLoopbackToken(), // ~/.decdn/gateway/token
-});
+const client = await DecdnClient.open({ gatewayUrl: "http://127.0.0.1:8484" });
 
 const { address } = await client.loopback.delegate();
 // The pool owner: decdn pool assign --pool <id> --signer <address> ...
@@ -173,9 +169,18 @@ registration order, that is not spent and not within 420 s of its expiry;
 `client.loopback.capabilities()` lists them in that order. With none that can
 pay, content the gateway must pull fails with `PAYMENT_REQUIRED`; a blob its
 cache holds whole is served at no cost. The gateway keeps its keys and
-capabilities in memory, so a restart loses them. The delegate and capability
-API takes no token and answers no cross-origin request. A `dcap1:` token
-decodes offline with `parseCapability`.
+capabilities in memory, so a restart loses them. A `dcap1:` token decodes
+offline with `parseCapability`.
+
+A loopback gateway takes no credential. Every request it answers passes a
+browser-header gate instead, so a web page on another origin cannot spend its
+capabilities: it refuses, with `FORBIDDEN` (403), a request marked
+`Sec-Fetch-Site: cross-site`, an `Origin` that is not one of the gateway's
+own (its bare host and its site origins), and a browser request (an `Origin`,
+or a `Mozilla/` user agent) with no `Sec-Fetch-Site`. A client outside a
+browser passes: from Node, the SDK sends no `Origin` and no `Mozilla/` user
+agent. In a browser, the page's own headers decide, so a page on another
+origin is refused.
 
 The SDK does not start the gateway. Run it yourself (`decdn gateway`, or the
 `decdn/decdn` Docker image). `open()` treats a `localhost`, `127.0.0.1` or
@@ -199,11 +204,6 @@ On a namespace host (`https://<ns>.decdn.link/`), pass the gateway URL so
 the host is recognised: `DecdnClient.open({ gatewayUrl: "https://decdn.link" })`.
 The bundle there is whatever the pointer names, so the page's own paths are
 not verified and `manifest()` needs a hash.
-
-A loopback `gatewayUrl` opens a `loopback` client. Without the token it
-reaches the delegate and capability API alone: any call that reads content or
-a manifest (`get`, `manifest`, and `head` or `resolve` of a bundle or entry)
-fails with `CONFIG` before any request.
 
 ## Verification
 
@@ -230,17 +230,17 @@ yet verified; act on them only once the stream is done.
 
 Every failure is a `DecdnError` with a stable `code`:
 
-| Code                                                                                                       | When                                                                                                        | Extra fields                    |
-| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `PAYMENT_REQUIRED`                                                                                         | 402: no capability a loopback gateway holds can pay                                                         | `body`                          |
-| `POOL_UNFUNDED`                                                                                            | 503: nothing a public gateway holds can pay right now                                                       | `retryAfterSecs`, `fallbackUri` |
-| `RANGE_NOT_SATISFIABLE`                                                                                    | 416                                                                                                         | `size`                          |
-| `CONFLICT`                                                                                                 | 409: a pointer `seq` that is not newer; a capability for a key not held, or a second from one pool on a key | `seq`                           |
-| `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `UPSTREAM`, `PAYLOAD_TOO_LARGE`, `UNPROCESSABLE` | 404, 401, 403, 429, 502, 413, 422                                                                           | `status`, `body`                |
-| `BAD_URI`                                                                                                  | A `decdn:` URI that does not parse, or 400                                                                  |                                 |
-| `HASH_MISMATCH`, `TRUNCATED`                                                                               | The body does not hash to its hash, or is shorter or longer than declared                                   |                                 |
-| `MALFORMED_MANIFEST`, `BAD_CAPABILITY`                                                                     | A manifest or `dcap1:` token that does not decode                                                           |                                 |
-| `NETWORK`, `CONFIG`, `HTTP`                                                                                | The gateway is unreachable; the client cannot do what was asked; another status                             |                                 |
+| Code                                                                                       | When                                                                                                        | Extra fields                    |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `PAYMENT_REQUIRED`                                                                         | 402: no capability a loopback gateway holds can pay                                                         | `body`                          |
+| `POOL_UNFUNDED`                                                                            | 503: nothing a public gateway holds can pay right now                                                       | `retryAfterSecs`, `fallbackUri` |
+| `RANGE_NOT_SATISFIABLE`                                                                    | 416                                                                                                         | `size`                          |
+| `CONFLICT`                                                                                 | 409: a pointer `seq` that is not newer; a capability for a key not held, or a second from one pool on a key | `seq`                           |
+| `NOT_FOUND`, `FORBIDDEN`, `RATE_LIMITED`, `UPSTREAM`, `PAYLOAD_TOO_LARGE`, `UNPROCESSABLE` | 404, 403, 429, 502, 413, 422                                                                                | `status`, `body`                |
+| `BAD_URI`                                                                                  | A `decdn:` URI that does not parse, or 400                                                                  |                                 |
+| `HASH_MISMATCH`, `TRUNCATED`                                                               | The body does not hash to its hash, or is shorter or longer than declared                                   |                                 |
+| `MALFORMED_MANIFEST`, `BAD_CAPABILITY`                                                     | A manifest or `dcap1:` token that does not decode                                                           |                                 |
+| `NETWORK`, `CONFIG`, `HTTP`                                                                | The gateway is unreachable; the client cannot do what was asked; another status                             |                                 |
 
 `fallbackUri` is the canonical `decdn:` URI: fetch it with a paying client of
 your own (`decdn get <uri>`), or wait `retryAfterSecs`. The SDK retries
@@ -289,7 +289,7 @@ are the deployment the gateway verifies against.
 | `blake3Hex`, `createBlake3`                                                     | BLAKE3, one-shot and incremental                                                                                                                                                          |
 | `parseManifest`, `parseCapability`                                              | Decodes a v1 bundle manifest, checking its hash when given one; decodes a `dcap1:` token without checking its signature                                                                   |
 | `DecdnError`                                                                    | Every failure, with a stable `code` ([Errors](#errors))                                                                                                                                   |
-| `readLoopbackToken`, `defaultDataDir`                                           | From `@decdn/client/node`: the loopback gateway's token and data dir (`~/.decdn/gateway`)                                                                                                 |
+| `defaultDataDir`                                                                | From `@decdn/client/node`: the loopback gateway's default data dir (`~/.decdn/gateway`)                                                                                                   |
 
 Namespaces, sequence numbers, caps and expiries are `bigint`.
 

@@ -8,7 +8,6 @@ export type Fetch = typeof globalThis.fetch;
 
 const CODES: Record<number, DecdnErrorCode> = {
   400: "BAD_URI",
-  401: "UNAUTHORIZED",
   402: "PAYMENT_REQUIRED",
   403: "FORBIDDEN",
   404: "NOT_FOUND",

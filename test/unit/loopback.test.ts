@@ -4,14 +4,8 @@ import { EXPIRY_MARGIN_SECS, FakeGateway } from "../fake-gateway.js";
 import capability from "../fixtures/capability.json" with { type: "json" };
 import { dcap } from "../support/dcap.js";
 
-const TOKEN = "cd".repeat(32);
-
-async function open(fake: FakeGateway, token: string | null = TOKEN) {
-  return DecdnClient.open({
-    gatewayUrl: fake.url,
-    fetch: fake.fetch,
-    ...(token === null ? {} : { token }),
-  });
+async function open(fake: FakeGateway) {
+  return DecdnClient.open({ gatewayUrl: fake.url, fetch: fake.fetch });
 }
 
 async function code(p: Promise<unknown>): Promise<string> {
@@ -29,7 +23,7 @@ const POOL_B = `0x${"bb".repeat(32)}`;
 
 describe("loopback API", () => {
   it("names the pending key, registers a capability that claims it, and lists it", async () => {
-    const fake = new FakeGateway({ mode: "loopback", token: TOKEN });
+    const fake = new FakeGateway({ mode: "loopback" });
     const c = await open(fake);
     const { address } = await c.loopback.delegate();
     expect(address).toMatch(/^0x[0-9a-fA-F]{40}$/);
@@ -61,24 +55,12 @@ describe("loopback API", () => {
     const put = fake.seen.find((s) => s.method === "PUT");
     expect(put?.headers.get("content-type")).toBe("application/json");
     for (const s of fake.seen) {
-      expect(s.headers.get("x-decdn-token")).toBeNull();
       expect(s.headers.get("x-decdn-host")).toBeNull();
     }
   });
 
-  it("takes no token", async () => {
-    const fake = new FakeGateway({ mode: "loopback", token: TOKEN });
-    const anonymous = await open(fake, null);
-    const { address } = await anonymous.loopback.delegate();
-    const registered = await anonymous.loopback.registerCapability({
-      capability: dcap({ pool: POOL_A, signer: address }),
-    });
-    expect(registered.signer).toBe(address);
-    expect(await anonymous.loopback.capabilities()).toHaveLength(1);
-  });
-
   it("holds capabilities from several pools on one key, one per pool", async () => {
-    const fake = new FakeGateway({ mode: "loopback", token: TOKEN });
+    const fake = new FakeGateway({ mode: "loopback" });
     const c = await open(fake);
     const { address } = await c.loopback.delegate();
     await c.loopback.registerCapability({
@@ -101,7 +83,7 @@ describe("loopback API", () => {
   });
 
   it("maps the API's refusals", async () => {
-    const fake = new FakeGateway({ mode: "loopback", token: TOKEN });
+    const fake = new FakeGateway({ mode: "loopback" });
     const c = await open(fake);
     // A key the gateway does not hold.
     expect(
@@ -154,7 +136,7 @@ describe("loopback API", () => {
 
 describe("loopback payment", () => {
   it("pays with the first usable capability in registration order, and moves on from a spent one", async () => {
-    const fake = new FakeGateway({ mode: "loopback", token: TOKEN });
+    const fake = new FakeGateway({ mode: "loopback" });
     const [one, two, three] = ["one", "two", "three"].map((s) =>
       fake.addBlob(s),
     );
@@ -186,7 +168,7 @@ describe("loopback payment", () => {
   });
 
   it("skips a capability inside the expiry margin", async () => {
-    const fake = new FakeGateway({ mode: "loopback", token: TOKEN });
+    const fake = new FakeGateway({ mode: "loopback" });
     const blob = fake.addBlob("paid bytes");
     fake.capabilities.push(
       {

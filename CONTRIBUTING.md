@@ -102,8 +102,9 @@ it. `--tag` names its release in `DECDN_CONTRACT_RELEASE`, so an older release
 never collects the test, and the fake and every `--ref` run it. The test is
 left out rather than skipped: decdn's harness fails a run that skips a test.
 
-The loopback suite needs pending-key capabilities, which ship after v0.3.1:
-a release at or before it speaks a scoped capability API this SDK does not,
+The loopback suite needs pending-key capabilities and a gateway with no
+token, which ship after v0.3.1: a release at or before it speaks a scoped,
+token-holding capability API this SDK does not,
 and its harness requires the suite to register a scoped capability. Against
 such a release the suite skips (`describe.skipIf(!shippedAfter("0.3.1"))`),
 and `scripts/decdn-contract.sh --tag` leaves that release's loopback journey

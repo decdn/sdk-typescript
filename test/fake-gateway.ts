@@ -32,8 +32,6 @@ export interface FakeOptions {
   mode: FakeMode;
   /** `host[:port]` of the bare host. Default `decdn.test` (public) or `127.0.0.1:8484` (loopback). */
   host?: string;
-  /** The loopback token. */
-  token?: string;
 }
 
 /** One request the fake answered. */
@@ -174,7 +172,6 @@ export class FakeGateway {
   readonly mode: FakeMode;
   /** `host[:port]` of the bare host; settable so a listener can name the port it got. */
   host: string;
-  readonly token: string;
   readonly blobs = new Map<string, Uint8Array>();
   /** The raw blobs whose size a proof here proved. */
   private readonly proven = new Set<string>();
@@ -214,7 +211,6 @@ export class FakeGateway {
     this.mode = opts.mode;
     this.host =
       opts.host ?? (opts.mode === "public" ? "decdn.test" : "127.0.0.1:8484");
-    this.token = opts.token ?? "ab".repeat(32);
   }
 
   /** Hold a capability that pays every request, as a registration through the API leaves one. */
@@ -402,6 +398,10 @@ export class FakeGateway {
       }
     }
     if (site === undefined && !bare) return text(403, "unknown Host\n");
+    if (this.mode === "loopback") {
+      const refused = this.gate(req);
+      if (refused !== undefined) return refused;
+    }
     if (this.mode === "public" && req.method === "OPTIONS")
       return this.preflight(url.pathname, site === undefined);
     if (site !== undefined) return this.site(req, url, site);
@@ -426,8 +426,53 @@ export class FakeGateway {
     });
   }
 
-  private authorized(req: Request): boolean {
-    return req.headers.get("x-decdn-token") === this.token;
+  /** Whether `origin` is one of a loopback gateway's own: its bare host or a site origin. */
+  private ownOrigin(origin: string): boolean {
+    let host: string;
+    try {
+      const u = new URL(origin);
+      if (u.protocol !== "http:") return false;
+      host = u.host;
+    } catch {
+      return false;
+    }
+    if (host === this.host || host === this.suffix) return true;
+    if (!host.endsWith(`.${this.suffix}`)) return false;
+    const labels = host.slice(0, -this.suffix.length - 1).split(".");
+    const [first = "", second] = labels;
+    if (labels.length === 1) return base32ToHash(first) !== undefined;
+    return (
+      labels.length === 2 &&
+      /^[1-9][0-9]*$/.test(first) &&
+      base32ToHash(second ?? "") !== undefined
+    );
+  }
+
+  /**
+   * A loopback gateway's browser-header gate on every request, in order: a
+   * cross-site request, an `Origin` that is not one of the gateway's own,
+   * and a request that looks like a browser (an `Origin`, or a `Mozilla/`
+   * user agent) with no `Sec-Fetch-Site` are refused; anything else, such as
+   * a client outside a browser, passes.
+   */
+  private gate(req: Request): Response | undefined {
+    const fetchSite = req.headers.get("sec-fetch-site");
+    if (fetchSite === "cross-site")
+      return text(403, "a page on another site may not use the gateway\n");
+    const origin = req.headers.get("origin");
+    if (origin !== null && !this.ownOrigin(origin))
+      return text(403, "a page on another origin may not use the gateway\n");
+    if (
+      fetchSite === null &&
+      (origin !== null ||
+        (req.headers.get("user-agent") ?? "").startsWith("Mozilla/"))
+    ) {
+      return text(
+        403,
+        "a browser that sends no Sec-Fetch-Site may not use the gateway\n",
+      );
+    }
+    return undefined;
   }
 
   /**
@@ -474,17 +519,19 @@ export class FakeGateway {
     } catch (e) {
       return text(400, `${(e as Error).message}\n`);
     }
-    if (this.mode === "public" || !this.authorized(req)) {
-      if (uri.kind !== "blob") {
-        return new Response(null, {
-          status: 302,
-          headers: { location: this.siteLocation(uri) },
-        });
-      }
-      if (this.mode === "loopback") return text(401, "token required\n");
-      if (req.method === "HEAD") return this.headBlob(uri);
-      return this.serve(uri, "bare", req.headers.get("range"));
+    // A public gateway sends every bundle and entry to its site; a loopback
+    // one sends a browser's navigation there and serves anything else here.
+    const toSite =
+      uri.kind !== "blob" &&
+      (this.mode === "public" ||
+        req.headers.get("sec-fetch-mode") === "navigate");
+    if (toSite) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: this.siteLocation(uri) },
+      });
     }
+    if (req.method === "HEAD") return this.headBlob(uri);
     return this.serve(uri, "bare", req.headers.get("range"));
   }
 
@@ -501,9 +548,9 @@ export class FakeGateway {
   }
 
   /**
-   * The gateway API on the bare host, or `undefined` for a content path. It
-   * takes no token; a loopback gateway answers no cross-origin request, a
-   * public one answers every origin.
+   * The gateway API on the bare host, or `undefined` for a content path. A
+   * loopback gateway answers no cross-origin request; a public one answers
+   * every origin.
    */
   private async api(req: Request, path: string): Promise<Response | undefined> {
     const method = req.method;
@@ -670,16 +717,20 @@ export class FakeGateway {
       return text(405, "", { allow: "GET" });
     if (req.method !== "GET" && req.method !== "HEAD")
       return text(405, "method not allowed\n");
-    if (this.mode === "loopback" && !this.authorized(req)) {
-      const fetchSite = req.headers.get("sec-fetch-site");
-      if (fetchSite === null)
-        return text(401, "token required outside a browser\n");
-      if (fetchSite !== "same-origin" && fetchSite !== "none") {
-        return text(
-          403,
-          "a site answers only its own pages and top-level navigation\n",
-        );
-      }
+    // A loopback site spends only for its own pages, the user, and a
+    // top-level navigation.
+    const fetchSite = req.headers.get("sec-fetch-site");
+    if (
+      this.mode === "loopback" &&
+      fetchSite !== null &&
+      fetchSite !== "same-origin" &&
+      fetchSite !== "none" &&
+      req.headers.get("sec-fetch-mode") !== "navigate"
+    ) {
+      return text(
+        403,
+        "a site answers only its own pages and top-level navigation\n",
+      );
     }
     const csp = {
       "content-security-policy":

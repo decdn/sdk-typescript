@@ -19,7 +19,6 @@ interface FixtureFile {
   gatewayUrl: string;
   /** `host:port` every request connects to. */
   connect: string;
-  token?: string;
   /**
    * One `dcap1:` per client flavour, each from its own pool, all issued to
    * the gateway's one pending delegate key and not yet registered
@@ -46,7 +45,6 @@ export interface Contract {
   mode: "public" | "loopback";
   gatewayUrl: string;
   fetch: typeof fetch;
-  token?: string;
   /** A `dcap1:` issued to the gateway's pending delegate key, not yet registered (loopback). */
   capability?: string;
   bundle: string;
@@ -133,7 +131,6 @@ async function fake(
       privateKey: pointerFixture.privateKey,
     };
   } else {
-    file.token = gw.token;
     // As decdn's harness does: the pending key, and a capability per
     // flavour issued to it from its own pool.
     const res = await gw.fetch(`${gw.url}/_delegate`);
@@ -203,13 +200,11 @@ export async function contract(
       DecdnClient.open({
         gatewayUrl: file.gatewayUrl,
         fetch,
-        ...(file.token === undefined ? {} : { token: file.token }),
         ...(out.pointer === undefined ? {} : { pointer: out.pointer }),
         ...extra,
       }),
     close,
   };
-  if (file.token !== undefined) out.token = file.token;
   const first = file.capabilities?.[0]?.capability;
   if (first !== undefined) out.capability = first;
   if (file.pointer !== undefined) {
