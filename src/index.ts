@@ -38,4 +38,9 @@ export {
   type PointerTypedData,
   type TypedDataSigner,
 } from "./pointer.js";
-export { LoopbackApi, type RegisteredCapability } from "./loopback.js";
+export {
+  LoopbackApi,
+  type CapabilityScope,
+  type RegisteredCapability,
+  type Registration,
+} from "./loopback.js";

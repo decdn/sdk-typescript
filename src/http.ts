@@ -1,6 +1,6 @@
 // The fetch wrapper: every non-2xx answer of the gateway becomes a
 // `DecdnError` with the fields its contract carries (Retry-After, the
-// `Link: <decdn:…>; rel="alternate"` fallback, the 402/503 JSON body, the
+// `Link: <decdn:…>; rel="alternate"` fallback, the 503 JSON body, the
 // 416 size, the pointer 409 `seq`).
 import { DecdnError, type DecdnErrorCode } from "./errors.js";
 
@@ -8,7 +8,6 @@ export type Fetch = typeof globalThis.fetch;
 
 const CODES: Record<number, DecdnErrorCode> = {
   400: "BAD_URI",
-  401: "UNAUTHORIZED",
   402: "PAYMENT_REQUIRED",
   403: "FORBIDDEN",
   404: "NOT_FOUND",
@@ -18,7 +17,7 @@ const CODES: Record<number, DecdnErrorCode> = {
   422: "UNPROCESSABLE",
   429: "RATE_LIMITED",
   502: "UPSTREAM",
-  503: "POOL_UNFUNDED",
+  503: "PAYMENT_REQUIRED",
 };
 
 /** `fetch`, with a failure to reach the gateway as `NETWORK` and an abort passed through. */
@@ -110,19 +109,21 @@ export async function errorOf(response: Response): Promise<DecdnError> {
 }
 
 /**
- * `text` parsed as JSON with the integer values of `fields` read as `bigint`:
- * the gateway writes u64 ids, caps and expiries as JSON numbers, which may
- * exceed 2^53.
+ * `text` parsed as JSON with the integer values of `fields`, and the integers
+ * of a list under one of `fields`, read as `bigint`: the gateway writes u64
+ * ids, caps and expiries as JSON numbers, which may exceed 2^53.
  */
 export function parseWithBigInts(text: string, fields: string[]): unknown {
   const names = fields.join("|");
   const quoted = text.replace(
-    new RegExp(`("(?:${names})"\\s*:\\s*)(\\d+)`, "g"),
-    '$1"$2"',
+    new RegExp(`("(?:${names})"\\s*:\\s*)(\\d+|\\[[\\d\\s,]*\\])`, "g"),
+    (_match, head: string, value: string) =>
+      `${head}${value.replace(/\d+/g, '"$&"')}`,
   );
-  return JSON.parse(quoted, (key, value: unknown) =>
-    fields.includes(key) && typeof value === "string" && /^\d+$/.test(value)
-      ? BigInt(value)
-      : value,
-  );
+  const big = (value: unknown) =>
+    typeof value === "string" && /^\d+$/.test(value) ? BigInt(value) : value;
+  return JSON.parse(quoted, (key, value: unknown) => {
+    if (!fields.includes(key)) return value;
+    return Array.isArray(value) ? value.map(big) : big(value);
+  });
 }

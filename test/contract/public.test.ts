@@ -60,6 +60,67 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
     });
   }
 
+  // Capabilities-only public gateways, after v0.3.1: the harness registers
+  // a capability through the bare host's API before the suite runs.
+  if (shippedAfter("0.3.1")) {
+    const fromApp = { headers: { origin: "https://app.example" } };
+    const KEYS = ["cap", "expiry", "pool", "signer", "spent"];
+    const keysOf = (list: unknown) =>
+      (list as object[]).map((e) => Object.keys(e).sort());
+
+    it("names its pending key on the bare host to any origin", async () => {
+      const r = await c.fetch(`${c.gatewayUrl}/_delegate`, fromApp);
+      expect(r.status).toBe(200);
+      expect(r.headers.get("access-control-allow-origin")).toBe("*");
+      const { address } = (await r.json()) as { address: string };
+      expect(address).toMatch(/^0x[0-9a-fA-F]{40}$/);
+    });
+
+    it("lists the capability it holds on the bare host to any origin", async () => {
+      const r = await c.fetch(`${c.gatewayUrl}/_capability`, fromApp);
+      expect(r.status).toBe(200);
+      expect(r.headers.get("access-control-allow-origin")).toBe("*");
+      const list = (await r.json()) as { spent: boolean }[];
+      expect(list.length).toBeGreaterThan(0);
+      for (const keys of keysOf(list)) expect(keys).toEqual(KEYS);
+      expect(list.some((e) => !e.spent)).toBe(true);
+    });
+
+    it("reports its capabilities in /_status, with no allowance", async () => {
+      const r = await c.fetch(`${c.gatewayUrl}/_status`, fromApp);
+      expect(r.status).toBe(200);
+      expect(r.headers.get("access-control-allow-origin")).toBe("*");
+      const status = (await r.json()) as Record<string, unknown>;
+      expect(status).not.toHaveProperty("allowance");
+      expect(Array.isArray(status.capabilities)).toBe(true);
+      for (const keys of keysOf(status.capabilities))
+        expect(keys).toEqual(KEYS);
+    });
+
+    it("answers an API preflight on the bare host only", async () => {
+      const preflight = {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://app.example",
+          "access-control-request-method": "PUT",
+          "access-control-request-headers": "content-type",
+        },
+      };
+      const bare = await c.fetch(`${c.gatewayUrl}/_capability`, preflight);
+      expect(bare.status).toBe(204);
+      expect(bare.headers.get("access-control-allow-origin")).toBe("*");
+      const site = new URL(client.siteUrl(`decdn:${c.bundle}/`)).origin;
+      for (const path of ["/_delegate", "/_capability", "/_status"]) {
+        const off = await c.fetch(`${site}${path}`, preflight);
+        expect(off.status, path).toBe(404);
+        await off.arrayBuffer();
+        const get = await c.fetch(`${site}${path}`, {});
+        expect(get.status, path).toBe(404);
+        await get.arrayBuffer();
+      }
+    });
+  }
+
   it("verifies an entry fetched through its site", async () => {
     const r = await client.get(`decdn:${c.bundle}/a.txt`);
     expect(r.verified).toBe(true);

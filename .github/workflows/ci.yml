@@ -59,10 +59,10 @@ jobs:
       - run: pnpm build
       # From the repo root, `@decdn/client` resolves to this package through
       # its own `exports`, as it does for a consumer.
-      - name: Load the built entry points
+      - name: Load the built entry point
         run: |
-          node -e 'require("@decdn/client"); require("@decdn/client/node")'
-          node --input-type=module -e 'await import("@decdn/client"); await import("@decdn/client/node")'
+          node -e 'require("@decdn/client")'
+          node --input-type=module -e 'await import("@decdn/client")'
 
   # The unit, script and contract tests with coverage of src/. The run fails
   # below the thresholds in vitest.config.ts; the upload after it is

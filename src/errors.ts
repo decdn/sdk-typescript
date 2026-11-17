@@ -1,15 +1,11 @@
 /** What went wrong, as a stable code a caller can branch on. */
 export type DecdnErrorCode =
-  /** 402: the gateway's allowance is spent, or the content does not fit what is left, or no capability covers the host. */
+  /** 402 or 503: nothing the gateway holds can pay for a pull right now. */
   | "PAYMENT_REQUIRED"
-  /** 503: the gateway's pool cannot pay. */
-  | "POOL_UNFUNDED"
   /** 404. */
   | "NOT_FOUND"
   /** 416: the range starts past the end; `size` holds the entry's size. */
   | "RANGE_NOT_SATISFIABLE"
-  /** 401: the loopback token is missing or wrong. */
-  | "UNAUTHORIZED"
   /** 403. */
   | "FORBIDDEN"
   /** 400, or a `decdn:` URI that does not parse. */
@@ -20,7 +16,7 @@ export type DecdnErrorCode =
   | "UPSTREAM"
   /** 413. */
   | "PAYLOAD_TOO_LARGE"
-  /** 409: a pointer `seq` that is not newer, or a capability already registered. */
+  /** 409: a pointer `seq` that is not newer; a capability for a key the gateway does not hold, or for a key that already holds one from its pool. */
   | "CONFLICT"
   /** 422. */
   | "UNPROCESSABLE"

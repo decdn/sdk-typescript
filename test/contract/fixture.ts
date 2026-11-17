@@ -6,14 +6,10 @@
 // HTTP, serving the same shapes. Every request goes through `hostFetch` to
 // the listener, with the URL's host as `Host`.
 import { readFileSync } from "node:fs";
-import {
-  DecdnClient,
-  parseCapability,
-  type PointerDomain,
-} from "../../src/index.js";
+import { DecdnClient, type PointerDomain } from "../../src/index.js";
 import { FakeGateway } from "../fake-gateway.js";
-import capabilityFixture from "../fixtures/capability.json" with { type: "json" };
 import pointerFixture from "../fixtures/pointer.json" with { type: "json" };
+import { dcap } from "../support/dcap.js";
 import { hostFetch } from "../support/host-fetch.js";
 
 /** The fixture file's shape: every byte string hex, every u64 decimal. */
@@ -23,10 +19,12 @@ interface FixtureFile {
   gatewayUrl: string;
   /** `host:port` every request connects to. */
   connect: string;
-  token?: string;
-  host?: string;
-  /** A `dcap1:` issued to a delegate the gateway holds, not yet registered (loopback). */
-  capability?: string;
+  /**
+   * One `dcap1:` per client flavour, each from its own pool, all issued to
+   * the gateway's one pending delegate key and not yet registered
+   * (loopback). This suite has one flavour and uses the first.
+   */
+  capabilities?: { capability: string }[];
   /** The bundle's manifest hash, and its files. */
   bundle: string;
   files: Record<string, string>;
@@ -47,8 +45,7 @@ export interface Contract {
   mode: "public" | "loopback";
   gatewayUrl: string;
   fetch: typeof fetch;
-  token?: string;
-  host?: string;
+  /** A `dcap1:` issued to the gateway's pending delegate key, not yet registered (loopback). */
   capability?: string;
   bundle: string;
   files: Record<string, Uint8Array>;
@@ -110,6 +107,19 @@ async function fake(
     blobBytes: Buffer.from(blobBytes).toString("hex"),
   };
   if (mode === "public") {
+    // As decdn's harness does: a capability on the pending key, registered
+    // through the bare host's API before the suite runs.
+    const res = await gw.fetch(`${gw.url}/_delegate`);
+    const { address } = (await res.json()) as { address: string };
+    const put = await gw.fetch(`${gw.url}/_capability`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        capability: dcap({ pool: `0x${"c0".repeat(32)}`, signer: address }),
+        scope: "any",
+      }),
+    });
+    if (put.status !== 201) throw new Error(await put.text());
     gw.pointerDomain = {
       chainId: pointerFixture.chainId,
       publisherRegistry: pointerFixture.publisherRegistry,
@@ -122,13 +132,13 @@ async function fake(
       privateKey: pointerFixture.privateKey,
     };
   } else {
-    file.token = gw.token;
-    file.host = "example.com";
-    file.capability = capabilityFixture.token;
-    gw.delegates.set(
-      parseCapability(capabilityFixture.token).signer.toLowerCase(),
-      undefined,
-    );
+    // As decdn's harness does: the pending key, and a capability per
+    // flavour issued to it from its own pool.
+    const res = await gw.fetch(`${gw.url}/_delegate`);
+    const { address } = (await res.json()) as { address: string };
+    file.capabilities = ["c1", "c2"].map((b) => ({
+      capability: dcap({ pool: `0x${b.repeat(32)}`, signer: address }),
+    }));
   }
   return { ...file, close: listener.close };
 }
@@ -191,16 +201,13 @@ export async function contract(
       DecdnClient.open({
         gatewayUrl: file.gatewayUrl,
         fetch,
-        ...(file.token === undefined ? {} : { token: file.token }),
-        ...(file.host === undefined ? {} : { host: file.host }),
         ...(out.pointer === undefined ? {} : { pointer: out.pointer }),
         ...extra,
       }),
     close,
   };
-  if (file.token !== undefined) out.token = file.token;
-  if (file.host !== undefined) out.host = file.host;
-  if (file.capability !== undefined) out.capability = file.capability;
+  const first = file.capabilities?.[0]?.capability;
+  if (first !== undefined) out.capability = first;
   if (file.pointer !== undefined) {
     out.pointer = {
       chainId: BigInt(file.pointer.chainId),
