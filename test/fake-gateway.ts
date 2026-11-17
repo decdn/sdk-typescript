@@ -149,7 +149,53 @@ export interface Registered {
   pool: string;
   cap: bigint;
   expiry: bigint;
+  /** The namespaces a namespace-scoped capability pays for; absent when it pays for any content. */
+  namespaces?: bigint[];
   spent: boolean;
+}
+
+/**
+ * `body` with each JSON number of a `namespaces` list as the string `"#<n>"`,
+ * so a u64 past 2^53 parses exactly and a string id stays distinguishable.
+ */
+function quoteNamespaces(body: string): string {
+  return body.replace(
+    /("namespaces"\s*:\s*\[)([^\]]*)\]/g,
+    (_m, head: string, list: string) =>
+      `${head}${list.replace(/(?<!["\w.])-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?![\w."])/g, '"#$&"')}]`,
+  );
+}
+
+/**
+ * The namespaces of a registration's `scope`: `[]` for `"any"`, the ids of a
+ * well-formed namespace scope (a non-empty list of positive u64s and a `0x`
+ * 65-byte hex signature), `undefined` for any other. The fake checks the
+ * shape alone; the real gateway also recovers the pool's owner from the
+ * signature.
+ */
+function scopeNamespaces(scope: unknown): bigint[] | undefined {
+  if (scope === "any") return [];
+  if (typeof scope !== "object" || scope === null) return undefined;
+  const { namespaces, signature, ...rest } = scope as Record<string, unknown>;
+  if (Object.keys(rest).length > 0) return undefined;
+  if (typeof signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(signature))
+    return undefined;
+  if (!Array.isArray(namespaces) || namespaces.length === 0) return undefined;
+  const ids: bigint[] = [];
+  for (const n of namespaces) {
+    if (typeof n !== "string" || !/^#\d+$/.test(n)) return undefined;
+    const id = BigInt(n.slice(1));
+    if (id < 1n || id >= 1n << 64n) return undefined;
+    ids.push(id);
+  }
+  return ids;
+}
+
+/** A capability entry's `"namespaces":[..],` member, or `""` for one that pays for any content. */
+function namespacesJson(r: Registered): string {
+  return r.namespaces === undefined
+    ? ""
+    : `"namespaces":[${r.namespaces.join(",")}],`;
 }
 
 function nowSecs(): bigint {
@@ -476,14 +522,20 @@ export class FakeGateway {
   }
 
   /**
-   * The capability that pays a pull: the first held one
-   * that is not spent and not inside the expiry margin. A pull that stops for
+   * The capability that pays a pull of content in `namespace`: the first held
+   * one that pays for it (any content, or a scope that names `namespace`) and
+   * is not spent and not inside the expiry margin. A pull that stops for
    * funding on one retires it, and the next takes the request.
    */
-  private payer(): Registered | undefined {
+  private payer(namespace: bigint | undefined): Registered | undefined {
     const horizon = nowSecs() + EXPIRY_MARGIN_SECS;
     for (const r of this.capabilities) {
       if (r.spent || r.expiry <= horizon) continue;
+      if (
+        r.namespaces !== undefined &&
+        (namespace === undefined || !r.namespaces.includes(namespace))
+      )
+        continue;
       if (this.drained.has(r.pool)) {
         r.spent = true;
         continue;
@@ -542,7 +594,7 @@ export class FakeGateway {
       .filter((r) => r.expiry > now)
       .map(
         (r) =>
-          `{"cap":${r.cap},"expiry":${r.expiry},"pool":"${r.pool}","signer":"${checksum(r.signer)}","spent":${r.spent}}`,
+          `{"cap":${r.cap},"expiry":${r.expiry},${namespacesJson(r)}"pool":"${r.pool}","signer":"${checksum(r.signer)}","spent":${r.spent}}`,
       )
       .join(",")}]`;
   }
@@ -586,23 +638,34 @@ export class FakeGateway {
     if (body.length > MAX_BODY) return text(413, "body too large\n");
     let request: unknown;
     try {
-      request = JSON.parse(body);
+      request = JSON.parse(quoteNamespaces(body));
     } catch (e) {
-      return text(422, `expected {"capability"}: ${(e as Error).message}\n`);
+      return text(
+        422,
+        `expected {"capability", "scope"}: ${(e as Error).message}\n`,
+      );
     }
+    if (typeof request !== "object" || request === null)
+      return text(422, 'expected {"capability", "scope"}\n');
+    const fields = request as Record<string, unknown>;
+    const capability = fields.capability;
     if (
-      typeof request !== "object" ||
-      request === null ||
-      Object.keys(request).some((k) => k !== "capability") ||
-      typeof (request as { capability?: unknown }).capability !== "string"
+      Object.keys(fields).some((k) => k !== "capability" && k !== "scope") ||
+      typeof capability !== "string" ||
+      !("scope" in fields)
     ) {
-      return text(422, 'expected {"capability"}\n');
+      return text(422, 'expected {"capability", "scope"}\n');
+    }
+    const namespaces = scopeNamespaces(fields.scope);
+    if (namespaces === undefined) {
+      return text(
+        422,
+        'a scope is "any" or {"namespaces": [<id>, ...], "signature": "0x<65-byte hex>"}\n',
+      );
     }
     let grant;
     try {
-      grant = parseCapability(
-        (request as { capability: string }).capability.trim(),
-      );
+      grant = parseCapability(capability.trim());
     } catch (e) {
       return text(422, `${(e as Error).message}\n`);
     }
@@ -623,15 +686,17 @@ export class FakeGateway {
     }
     if (signer === this.pending) delete this.pending;
     this.keys.add(signer);
-    this.capabilities.push({
+    const registered: Registered = {
       signer,
       pool,
       cap: grant.spendingCap,
       expiry: grant.expiry,
       spent: false,
-    });
+    };
+    if (namespaces.length > 0) registered.namespaces = namespaces;
+    this.capabilities.push(registered);
     return new Response(
-      `{"expiry":${grant.expiry},"pool":"${pool}","signer":"${checksum(signer)}"}`,
+      `{"expiry":${grant.expiry},${namespacesJson(registered)}"pool":"${pool}","signer":"${checksum(signer)}"}`,
       {
         status: 201,
         headers: { "content-type": "application/json" },
@@ -840,7 +905,7 @@ export class FakeGateway {
    */
   private pay(uri: DecdnUri, hash: string): Response | undefined {
     if (this.unfunded.has(hash)) return this.cannotPay(uri);
-    if (this.payer() !== undefined) return undefined;
+    if (this.payer(uri.namespace) !== undefined) return undefined;
     return this.mode === "public"
       ? this.cannotPay(uri)
       : text(402, NO_CAPABILITY);

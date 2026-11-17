@@ -40,6 +40,7 @@ export {
 } from "./pointer.js";
 export {
   LoopbackApi,
+  type CapabilityScope,
   type RegisteredCapability,
   type Registration,
 } from "./loopback.js";

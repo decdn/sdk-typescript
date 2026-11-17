@@ -31,6 +31,7 @@ describe("loopback API", () => {
     fake.pending = capability.signer.toLowerCase();
     const registered = await c.loopback.registerCapability({
       capability: capability.token,
+      scope: "any",
     });
     expect({ ...registered, signer: registered.signer.toLowerCase() }).toEqual({
       signer: capability.signer,
@@ -59,20 +60,65 @@ describe("loopback API", () => {
     }
   });
 
+  it("sends a namespace scope as given, and reads its namespaces back as bigints", async () => {
+    const fake = new FakeGateway({ mode: "loopback" });
+    const bodies: string[] = [];
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: async (input, init) => {
+        if (init?.method === "PUT") bodies.push(String(init.body));
+        return fake.fetch(input, init);
+      },
+    });
+    const { address } = await c.loopback.delegate();
+    const big = (1n << 64n) - 1n;
+    const signature = `0x${"ab".repeat(65)}`;
+    const token = dcap({ pool: POOL_A, signer: address });
+    const registered = await c.loopback.registerCapability({
+      capability: token,
+      scope: { namespaces: [7, big], signature },
+    });
+    expect(bodies).toEqual([
+      `{"capability":"${token}","scope":{"namespaces":[7,${big}],"signature":"${signature}"}}`,
+    ]);
+    expect(registered.namespaces).toEqual([7n, big]);
+    const any = await c.loopback.registerCapability({
+      capability: dcap({ pool: POOL_B, signer: address }),
+      scope: "any",
+    });
+    expect(any).not.toHaveProperty("namespaces");
+    expect(
+      (await c.loopback.capabilities()).map((l) => [l.pool, l.namespaces]),
+    ).toEqual([
+      [POOL_A, [7n, big]],
+      [POOL_B, undefined],
+    ]);
+    expect(Object.keys((await c.loopback.capabilities())[1] ?? {})).toEqual([
+      "cap",
+      "expiry",
+      "pool",
+      "signer",
+      "spent",
+    ]);
+  });
+
   it("holds capabilities from several pools on one key, one per pool", async () => {
     const fake = new FakeGateway({ mode: "loopback" });
     const c = await open(fake);
     const { address } = await c.loopback.delegate();
     await c.loopback.registerCapability({
       capability: dcap({ pool: POOL_A, signer: address }),
+      scope: "any",
     });
     await c.loopback.registerCapability({
       capability: dcap({ pool: POOL_B, signer: address }),
+      scope: "any",
     });
     expect(
       await code(
         c.loopback.registerCapability({
           capability: dcap({ pool: POOL_A, signer: address, cap: 5n }),
+          scope: "any",
         }),
       ),
     ).toBe("CONFLICT");
@@ -88,7 +134,10 @@ describe("loopback API", () => {
     // A key the gateway does not hold.
     expect(
       await code(
-        c.loopback.registerCapability({ capability: capability.token }),
+        c.loopback.registerCapability({
+          capability: capability.token,
+          scope: "any",
+        }),
       ),
     ).toBe("CONFLICT");
     const { address } = await c.loopback.delegate();
@@ -103,18 +152,51 @@ describe("loopback API", () => {
       }),
     ]) {
       expect(
-        await code(c.loopback.registerCapability({ capability: bad })),
+        await code(
+          c.loopback.registerCapability({ capability: bad, scope: "any" }),
+        ),
         bad,
       ).toBe("UNPROCESSABLE");
     }
-    const extra = await fake.fetch(`${fake.url}/_capability`, {
-      method: "PUT",
-      body: JSON.stringify({
-        capability: dcap({ pool: POOL_A, signer: address }),
-        scope: "*",
-      }),
-    });
-    expect(extra.status).toBe(422);
+    const good = dcap({ pool: POOL_A, signer: address });
+    const signature = `0x${"ab".repeat(65)}`;
+    for (const body of [
+      `{"capability":"${good}"}`,
+      `{"capability":"${good}","scope":"*"}`,
+      `{"capability":"${good}","scope":null}`,
+      `{"capability":"${good}","scope":"any","extra":1}`,
+      `{"capability":"${good}","scope":{"namespaces":[],"signature":"${signature}"}}`,
+      `{"capability":"${good}","scope":{"namespaces":[0],"signature":"${signature}"}}`,
+      `{"capability":"${good}","scope":{"namespaces":["7"],"signature":"${signature}"}}`,
+      `{"capability":"${good}","scope":{"namespaces":[1.5],"signature":"${signature}"}}`,
+      `{"capability":"${good}","scope":{"namespaces":[18446744073709551616],"signature":"${signature}"}}`,
+      `{"capability":"${good}","scope":{"namespaces":[7],"signature":"0xab"}}`,
+      `{"capability":"${good}","scope":{"namespaces":[7]}}`,
+      `{"capability":"${good}","scope":{"namespaces":[7],"signature":"${signature}","x":1}}`,
+    ]) {
+      const r = await fake.fetch(`${fake.url}/_capability`, {
+        method: "PUT",
+        body,
+      });
+      expect(r.status, body).toBe(422);
+    }
+    expect(fake.capabilities).toHaveLength(0);
+    expect(
+      await code(
+        c.loopback.registerCapability({
+          capability: good,
+          scope: undefined as unknown as "any",
+        }),
+      ),
+    ).toBe("CONFIG");
+    expect(
+      await code(
+        c.loopback.registerCapability({
+          capability: good,
+          scope: { namespaces: [0.5], signature },
+        }),
+      ),
+    ).toBe("CONFIG");
     const preflight = await fake.fetch(`${fake.url}/_delegate`, {
       method: "OPTIONS",
       headers: { origin: "https://app.example" },
@@ -144,10 +226,12 @@ describe("loopback payment", () => {
     const first = (await c.loopback.delegate()).address;
     await c.loopback.registerCapability({
       capability: dcap({ pool: POOL_A, signer: first }),
+      scope: "any",
     });
     const second = (await c.loopback.delegate()).address;
     await c.loopback.registerCapability({
       capability: dcap({ pool: POOL_B, signer: second }),
+      scope: "any",
     });
     await (await c.get(`decdn:${one}`)).bytes();
     expect(fake.paid.map((r) => r.pool)).toEqual([POOL_A]);
@@ -165,6 +249,27 @@ describe("loopback payment", () => {
     // A blob the cache holds whole needs no capability.
     expect(await (await c.get(`decdn:${one}`)).text()).toBe("one");
     expect(fake.paid).toHaveLength(2);
+  });
+
+  it("pays with a namespace-scoped capability only for content that names one of its namespaces", async () => {
+    const fake = new FakeGateway({ mode: "loopback" });
+    const [one, two] = ["one", "two"].map((s) => fake.addBlob(s));
+    const c = await open(fake);
+    const { address } = await c.loopback.delegate();
+    await c.loopback.registerCapability({
+      capability: dcap({ pool: POOL_A, signer: address }),
+      scope: { namespaces: [7n], signature: `0x${"ab".repeat(65)}` },
+    });
+    expect(await code(c.get(`decdn:${one}`))).toBe("PAYMENT_REQUIRED");
+    expect(await code(c.get(`decdn:${one}?ns=9`))).toBe("PAYMENT_REQUIRED");
+    expect(await (await c.get(`decdn:${one}?ns=7`)).text()).toBe("one");
+    expect(fake.paid.map((r) => r.pool)).toEqual([POOL_A]);
+    await c.loopback.registerCapability({
+      capability: dcap({ pool: POOL_B, signer: address }),
+      scope: "any",
+    });
+    expect(await (await c.get(`decdn:${two}`)).text()).toBe("two");
+    expect(fake.paid.map((r) => r.pool)).toEqual([POOL_A, POOL_B]);
   });
 
   it("skips a capability inside the expiry margin", async () => {

@@ -574,10 +574,10 @@ describe("public context", () => {
     expect(e.status).toBe(416);
   });
 
-  it("maps a public gateway nothing can pay for to POOL_UNFUNDED with the fallback URI", async () => {
+  it("maps a public gateway nothing can pay for to PAYMENT_REQUIRED with the fallback URI", async () => {
     const { fake, blob } = publicFake(false);
     const c = await open(fake);
-    const e = await rejects(c.get(`decdn:${blob}?ns=7`), "POOL_UNFUNDED");
+    const e = await rejects(c.get(`decdn:${blob}?ns=7`), "PAYMENT_REQUIRED");
     expect(e.status).toBe(503);
     expect(e.fallbackUri).toBe(`decdn:${blob}?ns=7`);
     expect(e.retryAfterSecs).toBe(60);
@@ -592,11 +592,11 @@ describe("public context", () => {
     expect(fake.paid).toHaveLength(1);
   });
 
-  it("maps a pool that cannot pay to POOL_UNFUNDED", async () => {
+  it("maps a pool that cannot pay to PAYMENT_REQUIRED", async () => {
     const { fake, blob } = publicFake();
     fake.unfunded.add(blob);
     const c = await open(fake);
-    const e = await rejects(c.get(`decdn:${blob}`), "POOL_UNFUNDED");
+    const e = await rejects(c.get(`decdn:${blob}`), "PAYMENT_REQUIRED");
     expect(e.retryAfterSecs).toBe(60);
     expect(e.fallbackUri).toBe(`decdn:${blob}`);
   });
@@ -891,11 +891,11 @@ describe("public context", () => {
   it("maps a raw blob's HEAD refusals as its GET's", async () => {
     const { fake, blob } = publicFake(false);
     const c = await open(fake);
-    await rejects(c.head(`decdn:${blob}`), "POOL_UNFUNDED");
+    await rejects(c.head(`decdn:${blob}`), "PAYMENT_REQUIRED");
     const funded = publicFake();
     funded.fake.unfunded.add(funded.blob);
     const d = await open(funded.fake);
-    await rejects(d.head(`decdn:${funded.blob}`), "POOL_UNFUNDED");
+    await rejects(d.head(`decdn:${funded.blob}`), "PAYMENT_REQUIRED");
   });
 
   it("pays a raw blob's proof once, under a site's /_decdn/ too", async () => {

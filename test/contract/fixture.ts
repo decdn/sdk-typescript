@@ -116,6 +116,7 @@ async function fake(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         capability: dcap({ pool: `0x${"c0".repeat(32)}`, signer: address }),
+        scope: "any",
       }),
     });
     if (put.status !== 201) throw new Error(await put.text());

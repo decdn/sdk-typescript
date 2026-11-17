@@ -1,9 +1,7 @@
 /** What went wrong, as a stable code a caller can branch on. */
 export type DecdnErrorCode =
-  /** 402: no capability a loopback gateway holds can pay for a pull. */
+  /** 402 or 503: nothing the gateway holds can pay for a pull right now. */
   | "PAYMENT_REQUIRED"
-  /** 503: nothing a public gateway holds can pay for a pull right now. */
-  | "POOL_UNFUNDED"
   /** 404. */
   | "NOT_FOUND"
   /** 416: the range starts past the end; `size` holds the entry's size. */

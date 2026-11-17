@@ -12,6 +12,7 @@ import {
   type DecdnClient,
 } from "../../src/index.js";
 import pinnedCapability from "../fixtures/capability.json" with { type: "json" };
+import { dcap } from "../support/dcap.js";
 import { contract, shippedAfter, type Contract } from "./fixture.js";
 
 let c: Contract;
@@ -74,14 +75,20 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
       expect(e.fallbackUri).toBeUndefined();
     });
 
-    it("refuses a registration with a field besides the capability", async () => {
-      const r = await raw("/_capability", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ capability: c.capability, scope: "*" }),
-      });
-      expect(r.status).toBe(422);
-      await r.arrayBuffer();
+    it("refuses a registration with no scope, a scope other than any, or a field besides them", async () => {
+      for (const body of [
+        { capability: c.capability },
+        { capability: c.capability, scope: "*" },
+        { capability: c.capability, scope: "any", extra: 1 },
+      ]) {
+        const r = await raw("/_capability", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        expect(r.status, JSON.stringify(body)).toBe(422);
+        await r.arrayBuffer();
+      }
     });
 
     it("refuses a capability for a key it does not hold", async () => {
@@ -90,6 +97,7 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
       const e = await failure(
         client.loopback.registerCapability({
           capability: pinnedCapability.token,
+          scope: "any",
         }),
       );
       expect(e.code).toBe("CONFLICT");
@@ -98,6 +106,7 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
     it("registers the capability, which claims the pending key", async () => {
       const registered = await client.loopback.registerCapability({
         capability: c.capability ?? "",
+        scope: "any",
       });
       const g = grant();
       expect({
@@ -138,10 +147,37 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
       const e = await failure(
         client.loopback.registerCapability({
           capability: c.capability ?? "",
+          scope: "any",
         }),
       );
       expect(e.code).toBe("CONFLICT");
     });
+
+    // A namespace scope needs the pool owner's signature, which the real
+    // gateway recovers on chain; the fake checks its shape alone, so only
+    // the fake runs this.
+    if (run?.real === false) {
+      it("registers a namespace-scoped capability and lists its namespaces", async () => {
+        const g = grant();
+        const pool = `0x${"5c".repeat(32)}`;
+        const registered = await client.loopback.registerCapability({
+          capability: dcap({ pool, signer: g.signer }),
+          scope: { namespaces: [7n, 9n], signature: `0x${"ab".repeat(65)}` },
+        });
+        expect(registered.namespaces).toEqual([7n, 9n]);
+        const held = await client.loopback.capabilities();
+        const scoped = held.find((h) => h.pool.toLowerCase() === pool);
+        expect(Object.keys(scoped ?? {}).sort()).toEqual([
+          "cap",
+          "expiry",
+          "namespaces",
+          "pool",
+          "signer",
+          "spent",
+        ]);
+        expect(scoped?.namespaces).toEqual([7n, 9n]);
+      });
+    }
 
     it("answers no preflight to a page on another origin", async () => {
       for (const path of ["/_delegate", "/_capability"]) {

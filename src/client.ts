@@ -854,7 +854,7 @@ export class DecdnClient {
     } catch (e) {
       const retryable =
         e instanceof DecdnError &&
-        ["PAYMENT_REQUIRED", "POOL_UNFUNDED", "RATE_LIMITED"].includes(e.code);
+        ["PAYMENT_REQUIRED", "RATE_LIMITED"].includes(e.code);
       if (!opts.retry || !retryable || e.retryAfterSecs === undefined) throw e;
       await sleep(e.retryAfterSecs * 1000, opts.signal);
       return this.request(url, "GET", headers, opts.signal);
