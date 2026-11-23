@@ -913,6 +913,81 @@ describe("public context", () => {
     expect(fake.allowance).toBe((1 << 20) - 16 * 1024);
   });
 
+  it("redirects HEAD of bundle content under a site's /_decdn/ to its site, a directory to the directory, with no pull", async () => {
+    const { fake } = publicFake(1 << 20);
+    const docs = fake.addBundle({
+      "docs/index.html": "<p>docs</p>",
+      "a.txt": "abc",
+    });
+    const label = hashToBase32(docs.hash);
+    const site = `http://${label}.decdn.test`;
+    const head = (url: string) =>
+      fake.fetch(url, { method: "HEAD", redirect: "manual" });
+    for (const [path, location] of [
+      ["docs/", `${site}/docs/`],
+      ["docs/?ns=7", `http://7.${label}.decdn.test/docs/`],
+      ["a.txt", `${site}/a.txt`],
+      ["", `${site}/`],
+    ]) {
+      const r = await head(`${site}/_decdn/${docs.hash}/${path}`);
+      expect(r.status, path).toBe(302);
+      expect(r.headers.get("location"), path).toBe(location);
+    }
+    expect(fake.allowance).toBe(1 << 20);
+  });
+
+  it("keeps the query on a site directory's redirect, and answers 404 for a directory with no index.html under /_decdn/", async () => {
+    const { fake } = publicFake();
+    const docs = fake.addBundle({
+      "docs/index.html": "<p>docs</p>",
+      "css/site.css": "a { color: red }",
+    });
+    const site = `http://${hashToBase32(docs.hash)}.decdn.test`;
+    const own = await fake.fetch(`${site}/docs?tab=2`, {
+      method: "HEAD",
+      redirect: "manual",
+    });
+    expect(own.status).toBe(302);
+    expect(own.headers.get("location")).toBe("docs/?tab=2");
+    const css = await fake.fetch(`${site}/_decdn/${docs.hash}/css/`, {
+      redirect: "manual",
+      headers: { "sec-fetch-mode": "cors" },
+    });
+    expect(css.status).toBe(404);
+  });
+
+  it("redirects a navigation of bundle content under a site's /_decdn/ to its site, with no pull", async () => {
+    const { fake } = publicFake(1 << 20);
+    const docs = fake.addBundle({ "docs/index.html": "<p>docs</p>" });
+    const label = hashToBase32(docs.hash);
+    const site = `http://${label}.decdn.test`;
+    const navigate = {
+      redirect: "manual",
+      headers: { "sec-fetch-mode": "navigate" },
+    } as const;
+    const dir = await fake.fetch(
+      `${site}/_decdn/${docs.hash}/docs/?ns=7`,
+      navigate,
+    );
+    expect(dir.status).toBe(302);
+    expect(dir.headers.get("location")).toBe(
+      `http://7.${label}.decdn.test/docs/`,
+    );
+    const entry = await fake.fetch(
+      `${site}/_decdn/${docs.hash}/docs`,
+      navigate,
+    );
+    expect(entry.status).toBe(302);
+    expect(entry.headers.get("location")).toBe(`${site}/docs`);
+    // A request without Sec-Fetch-Mode is a navigation too.
+    const bare = await fake.fetch(`${site}/_decdn/${docs.hash}/docs/`, {
+      redirect: "manual",
+    });
+    expect(bare.status).toBe(302);
+    expect(bare.headers.get("location")).toBe(`${site}/docs/`);
+    expect(fake.allowance).toBe(1 << 20);
+  });
+
   it("answers the empty blob with no proof", async () => {
     const { fake } = publicFake(1);
     const empty = fake.addBlob("");
