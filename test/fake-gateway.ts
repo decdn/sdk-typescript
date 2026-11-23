@@ -756,7 +756,11 @@ export class FakeGateway {
     );
   }
 
-  private siteLocation(uri: DecdnUri): string {
+  /**
+   * The URL of `uri` on its bundle's site. With `directory`, `uri` names a
+   * directory's `index.html`, and the URL is the directory itself.
+   */
+  private siteLocation(uri: DecdnUri, directory = false): string {
     const label = hashToBase32(uri.hash);
     const host =
       uri.namespace === undefined
@@ -767,7 +771,8 @@ export class FakeGateway {
       kind: uri.kind,
       ...(uri.path === undefined ? {} : { path: uri.path }),
     }).slice("decdn:".length + 64);
-    return `http://${host}${path}`;
+    const at = directory ? path.slice(0, -"index.html".length) : path;
+    return `http://${host}${at}`;
   }
 
   private async site(
@@ -803,16 +808,40 @@ export class FakeGateway {
     };
     let response: Response;
     if (path.startsWith("/_decdn/")) {
+      // A directory in a bundle (`<hash>/<dir>/`) names its `index.html`, as
+      // a site's own directory paths do; the bundle root stays as it is.
+      const rest = path.slice("/_decdn/".length);
+      const slash = rest.indexOf("/");
+      const directory =
+        slash >= 0 && slash < rest.length - 1 && rest.endsWith("/");
       let uri: DecdnUri;
       try {
-        uri = parseUri(`decdn:${path.slice("/_decdn/".length)}${url.search}`);
+        uri = parseUri(
+          `decdn:${rest}${directory ? "index.html" : ""}${url.search}`,
+        );
       } catch (e) {
         return text(400, `${(e as Error).message}\n`);
       }
-      response =
-        req.method === "HEAD" && uri.kind === "blob"
-          ? this.headBlob(uri)
-          : await this.serve(uri, "site", req.headers.get("range"));
+      const navigation =
+        (req.headers.get("sec-fetch-mode") ?? "navigate") === "navigate";
+      if (uri.kind !== "blob" && (req.method === "HEAD" || navigation)) {
+        // A HEAD or a navigation (no Sec-Fetch-Mode, or navigate) of a
+        // bundle or an entry redirects to its site, a directory to the
+        // directory, without reading the manifest or charging.
+        response = new Response(null, {
+          status: 302,
+          headers: { location: this.siteLocation(uri, directory) },
+        });
+      } else if (req.method === "HEAD") {
+        response = this.headBlob(uri);
+      } else {
+        response = await this.serve(
+          uri,
+          "site",
+          req.headers.get("range"),
+          url.search,
+        );
+      }
     } else {
       const entry =
         path.length > 1 && path.endsWith("/") ? `${path}index.html` : path;
@@ -825,8 +854,8 @@ export class FakeGateway {
       if (site.namespace !== undefined) uri.namespace = site.namespace;
       response =
         req.method === "HEAD"
-          ? this.headSite(uri)
-          : await this.serve(uri, "site", req.headers.get("range"));
+          ? this.headSite(uri, url.search)
+          : await this.serve(uri, "site", req.headers.get("range"), url.search);
     }
     for (const [k, v] of Object.entries(csp)) response.headers.set(k, v);
     return response;
@@ -854,29 +883,31 @@ export class FakeGateway {
 
   /**
    * A site's answer for `path`, which `manifest` has no entry at: a
-   * redirect to the directory when it has an `index.html`, relative to the
-   * request, so it holds under `/_decdn/` too; else 404.
+   * redirect to the directory, with the request's `query` (`?…`, or empty)
+   * kept, when it has an `index.html`; else 404. The location is relative
+   * to the request, so it holds under `/_decdn/` too.
    */
   private directory(
     uri: DecdnUri,
     manifest: BundleManifest,
     path: string,
+    query: string,
   ): Response {
     if (!manifest.entries.some((e) => e.path === `${path}/index.html`))
       return text(404, `no entry ${path} in bundle\n`);
     const last = formatUri(uri).split("?")[0]?.split("/").pop() ?? "";
     return new Response(null, {
       status: 302,
-      headers: { location: `${last}/` },
+      headers: { location: `${last}/${query}` },
     });
   }
 
-  private headSite(uri: DecdnUri): Response {
+  private headSite(uri: DecdnUri, query: string): Response {
     const manifest = this.manifestOf(uri.hash, uri.namespace);
     if (manifest instanceof Response) return manifest;
     const path = uri.kind === "bundle" ? "index.html" : (uri.path ?? "");
     const entry = manifest.entries.find((e) => e.path === path);
-    if (entry === undefined) return this.directory(uri, manifest, path);
+    if (entry === undefined) return this.directory(uri, manifest, path, query);
     const headers: Record<string, string> = {
       "content-type": siteType(path),
       etag: `"${entry.hash}"`,
@@ -941,6 +972,7 @@ export class FakeGateway {
     uri: DecdnUri,
     present: "bare" | "site",
     range: string | null,
+    query = "",
   ): Promise<Response> {
     // A raw blob the cache holds whole, and the empty root, need nothing that
     // pays; every other answer is a paid pull.
@@ -978,6 +1010,7 @@ export class FakeGateway {
           manifest,
           present,
           null,
+          query,
         );
       }
       const links = manifest.entries
@@ -987,7 +1020,7 @@ export class FakeGateway {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     }
-    return this.entry(uri, manifest, present, range);
+    return this.entry(uri, manifest, present, range, query);
   }
 
   private entry(
@@ -995,12 +1028,13 @@ export class FakeGateway {
     manifest: BundleManifest,
     present: "bare" | "site",
     range: string | null,
+    query: string,
   ): Response {
     const path = uri.path ?? "";
     const entry = manifest.entries.find((e) => e.path === path);
     if (entry === undefined) {
       return present === "site"
-        ? this.directory(uri, manifest, path)
+        ? this.directory(uri, manifest, path, query)
         : text(404, `no entry ${path} in bundle\n`);
     }
     if (this.unfunded.has(entry.hash)) return this.cannotPay(uri);

@@ -262,6 +262,50 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
     expect(r.status).toBe(403);
   });
 
+  // decdn/decdn#2818, after v0.3.1.
+  if (shippedAfter("0.3.1")) {
+    it("serves a directory under a site's /_decdn/ as its index.html, and redirects keep the query", async () => {
+      const index = c.files["docs/index.html"];
+      if (index === undefined)
+        throw new Error("the fixture bundle has no docs/index.html");
+      const site = new URL(client.siteUrl(`decdn:${c.bundle}/`)).origin;
+      // The gateway treats a request without Sec-Fetch-Mode as a navigation
+      // and redirects it from /_decdn/ to the bundle's site; these headers
+      // make it a page's own request.
+      const page = {
+        redirect: "manual",
+        headers: { "sec-fetch-mode": "cors", "sec-fetch-site": "same-origin" },
+      } as const;
+      for (const [query, location] of [
+        ["", "docs/"],
+        ["?ns=7", "docs/?ns=7"],
+      ]) {
+        const r = await c.fetch(
+          `${site}/_decdn/${c.bundle}/docs${query}`,
+          page,
+        );
+        expect(r.status).toBe(302);
+        expect(r.headers.get("location")).toBe(location);
+      }
+      // `?ns=` routes the pull by a namespace the network need not serve, so
+      // the directory's index is fetched without it.
+      const dir = await c.fetch(`${site}/_decdn/${c.bundle}/docs/`, page);
+      expect(dir.status).toBe(200);
+      expect(new Uint8Array(await dir.arrayBuffer())).toEqual(index);
+      const head = await c.fetch(`${site}/_decdn/${c.bundle}/docs/`, {
+        ...page,
+        method: "HEAD",
+      });
+      expect(head.status).toBe(302);
+      expect(head.headers.get("location")).toBe(`${site}/docs/`);
+      for (const method of ["GET", "HEAD"]) {
+        const own = await c.fetch(`${site}/docs?tab=2`, { ...page, method });
+        expect(own.status, method).toBe(302);
+        expect(own.headers.get("location"), method).toBe("docs/?tab=2");
+      }
+    });
+  }
+
   it("redirects a bundle on the bare host to its site", async () => {
     const r = await c.fetch(`${c.gatewayUrl}/${c.bundle}/a.txt`, {
       redirect: "manual",
