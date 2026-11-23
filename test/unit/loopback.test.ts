@@ -166,7 +166,6 @@ describe("loopback API", () => {
       `{"capability":"${good}","scope":null}`,
       `{"capability":"${good}","scope":"any","extra":1}`,
       `{"capability":"${good}","scope":{"namespaces":[],"signature":"${signature}"}}`,
-      `{"capability":"${good}","scope":{"namespaces":[0],"signature":"${signature}"}}`,
       `{"capability":"${good}","scope":{"namespaces":["7"],"signature":"${signature}"}}`,
       `{"capability":"${good}","scope":{"namespaces":[1.5],"signature":"${signature}"}}`,
       `{"capability":"${good}","scope":{"namespaces":[18446744073709551616],"signature":"${signature}"}}`,
@@ -181,28 +180,53 @@ describe("loopback API", () => {
       expect(r.status, body).toBe(422);
     }
     expect(fake.capabilities).toHaveLength(0);
-    expect(
-      await code(
-        c.loopback.registerCapability({
-          capability: good,
-          scope: undefined as unknown as "any",
-        }),
-      ),
-    ).toBe("CONFIG");
-    expect(
-      await code(
-        c.loopback.registerCapability({
-          capability: good,
-          scope: { namespaces: [0.5], signature },
-        }),
-      ),
-    ).toBe("CONFIG");
+    // The gateway reads a scope signature's length only once it holds the key.
+    const unheld = await fake.fetch(`${fake.url}/_capability`, {
+      method: "PUT",
+      body: `{"capability":"${capability.token}","scope":{"namespaces":[7],"signature":"0xab"}}`,
+    });
+    expect(unheld.status).toBe(409);
+    const seen = fake.seen.length;
+    for (const scope of [
+      undefined,
+      { namespaces: [0.5], signature },
+      { namespaces: [], signature },
+      { namespaces: [0n], signature },
+      { namespaces: [-1], signature },
+      { namespaces: [1n << 64n], signature },
+      { namespaces: [7n] },
+      { namespaces: [7n], signature: "0xab" },
+      { namespaces: [7n], signature: `0x${"zz".repeat(65)}` },
+    ]) {
+      expect(
+        await code(
+          c.loopback.registerCapability({
+            capability: good,
+            scope: scope as unknown as "any",
+          }),
+        ),
+        JSON.stringify(scope, (_k, v: unknown) =>
+          typeof v === "bigint" ? String(v) : v,
+        ),
+      ).toBe("CONFIG");
+    }
+    expect(fake.seen).toHaveLength(seen);
     const preflight = await fake.fetch(`${fake.url}/_delegate`, {
       method: "OPTIONS",
       headers: { origin: "https://app.example" },
     });
     expect(preflight.status).toBe(403);
     expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("reports an answer that is not JSON as HTTP", async () => {
+    const c = await DecdnClient.open({
+      gatewayUrl: "http://127.0.0.1:8484",
+      fetch: () => Promise.resolve(new Response("<h1>another server</h1>")),
+    });
+    for (const call of [c.loopback.delegate(), c.loopback.capabilities()]) {
+      expect(await code(call)).toBe("HTTP");
+    }
   });
 
   it("is a loopback gateway's alone", async () => {
@@ -270,6 +294,29 @@ describe("loopback payment", () => {
     });
     expect(await (await c.get(`decdn:${two}`)).text()).toBe("two");
     expect(fake.paid.map((r) => r.pool)).toEqual([POOL_A, POOL_B]);
+  });
+
+  it("pays a request that names a namespace with a capability scoped to it before an earlier any one", async () => {
+    const fake = new FakeGateway({ mode: "loopback" });
+    const [one, two] = ["one", "two"].map((s) => fake.addBlob(s));
+    const c = await open(fake);
+    const first = (await c.loopback.delegate()).address;
+    await c.loopback.registerCapability({
+      capability: dcap({ pool: POOL_A, signer: first }),
+      scope: "any",
+    });
+    const second = (await c.loopback.delegate()).address;
+    await c.loopback.registerCapability({
+      capability: dcap({ pool: POOL_B, signer: second }),
+      scope: { namespaces: [7n], signature: `0x${"ab".repeat(65)}` },
+    });
+    expect((await c.loopback.capabilities()).map((l) => l.pool)).toEqual([
+      POOL_A,
+      POOL_B,
+    ]);
+    await (await c.get(`decdn:${one}?ns=7`)).bytes();
+    await (await c.get(`decdn:${two}`)).bytes();
+    expect(fake.paid.map((r) => r.pool)).toEqual([POOL_B, POOL_A]);
   });
 
   it("skips a capability inside the expiry margin", async () => {

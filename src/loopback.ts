@@ -7,19 +7,20 @@
 import type { DecdnClient } from "./client.js";
 import { DecdnError } from "./errors.js";
 import { parseWithBigInts, sendOk } from "./http.js";
-import { integer } from "./pointer.js";
+import { namespaceId } from "./pointer.js";
 
 /**
  * The content a registered capability pays for: `"any"`, or only the
  * content of `namespaces`. A namespace scope carries the pool owner's EIP-712
  * `CapabilityScope(address signer,bytes32 poolId,uint256[] namespaces)`
  * signature (domain `decdn-capability-scope`, version `1`, the chain id, and
- * the PaymentPool as verifying contract), which the SDK passes through.
+ * the PaymentPool as verifying contract), which the SDK passes through
+ * ([scope](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md#scope)).
  */
 export type CapabilityScope =
   | "any"
   | {
-      /** Namespace ids, each at least 1; at least one. */
+      /** Namespace ids, each a u64 of at least 1; at least one. */
       namespaces: readonly (bigint | number)[];
       /** `0x` + the 65-byte signature, in hex. */
       signature: string;
@@ -83,7 +84,10 @@ export class LoopbackApi {
    * memory, so a restart loses them and every capability issued to them.
    */
   async delegate(): Promise<{ address: string }> {
-    const parsed = JSON.parse(await this.call("GET", "/_delegate")) as {
+    const parsed = parseWithBigInts(
+      await this.call("GET", "/_delegate"),
+      [],
+    ) as {
       address: string;
     };
     return { address: parsed.address };
@@ -121,8 +125,10 @@ export class LoopbackApi {
   }
 
   /**
-   * The unexpired capabilities the gateway holds, in registration order: the
-   * order it pays with them.
+   * The unexpired capabilities the gateway holds, in registration order. The
+   * gateway pays a request that selects a namespace with the earliest
+   * capability scoped to it, else with the earliest `"any"` one
+   * ([capabilities](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md#capabilities)).
    */
   async capabilities(): Promise<RegisteredCapability[]> {
     const text = await this.call("GET", "/_capability");
@@ -134,7 +140,10 @@ export class LoopbackApi {
   }
 }
 
-/** `scope` as the JSON `PUT /_capability` carries, its namespace ids as integers. */
+/**
+ * `scope` as the JSON `PUT /_capability` carries, its namespace ids as
+ * integers; `CONFIG` for a scope the gateway would refuse as malformed.
+ */
 function scopeJson(scope: CapabilityScope): string {
   if (scope === "any") return '"any"';
   if (
@@ -147,6 +156,18 @@ function scopeJson(scope: CapabilityScope): string {
       'a capability scope is "any" or { namespaces, signature }',
     );
   }
-  const ids = scope.namespaces.map((n) => integer(n, "a namespace id"));
-  return `{"namespaces":[${ids.join(",")}],"signature":${JSON.stringify(scope.signature)}}`;
+  if (scope.namespaces.length === 0)
+    throw new DecdnError("CONFIG", "a scope names at least one namespace");
+  const ids = scope.namespaces.map(namespaceId);
+  const { signature } = scope as { signature: unknown };
+  if (
+    typeof signature !== "string" ||
+    !/^0x[0-9a-fA-F]{130}$/.test(signature)
+  ) {
+    throw new DecdnError(
+      "CONFIG",
+      "a scope signature is 0x and 65 bytes in hex",
+    );
+  }
+  return `{"namespaces":[${ids.join(",")}],"signature":"${signature}"}`;
 }

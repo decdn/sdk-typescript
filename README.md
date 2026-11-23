@@ -106,7 +106,7 @@ Node.js 20.19 or later, and evergreen browsers.
 | `@decdn/client` | `decdn gateway`                                                                                                                                                                                   |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0.3             | v0.3.0 or later for browser pages and public gateways; a release after v0.3.1 for loopback gateways (pending-key capabilities)                                                                    |
-| 0.1             | v0.3.0 or later for browser pages and public gateways ([cross-origin reads](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md#cross-origin-reads)); any loopback gateway from Node |
+| 0.1, 0.2        | v0.3.0 or later for browser pages and public gateways ([cross-origin reads](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md#cross-origin-reads)); any loopback gateway from Node |
 
 CI runs the contract suite against the floor and the latest decdn release, with
 each release's signed binaries ([CONTRIBUTING.md](CONTRIBUTING.md#release-gateways)).
@@ -138,8 +138,11 @@ The same code runs in a browser on any origin: a public gateway answers every
 origin, `Range` preflights included.
 
 A public gateway pays every pull with the capabilities its operator
-registered on its bare host (`GET /_delegate`, `PUT /_capability`), under the
-same rules as a [loopback gateway](#loopback-gateway-node). When none can pay,
+registered on its bare host (`GET /_delegate`, `PUT /_capability`), in the
+order a [loopback gateway](#loopback-gateway-node) pays with them, except that
+only a namespace pointer selects a namespace scope: a request on `<ns>.<host>`
+for the bundle the pointer names. `?ns=` and a `<ns>.<hash32>` label select
+none there, since anyone can write them ([scope](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md#scope)). When none can pay,
 a request fails with `PAYMENT_REQUIRED` (503, `retryAfterSecs` and
 `fallbackUri` set); a blob its cache holds whole is still served.
 
@@ -182,12 +185,14 @@ await client.loopback.registerCapability({
 // → { signer, pool, expiry, namespaces: [7n, 9n] }
 ```
 
-A request that names no namespace is paid only by an `"any"` capability. A
-key holds one capability per pool, and may hold capabilities from several
-pools. The gateway pays each request with the first capability, in
-registration order, that pays for its content and is not spent and not
-within 420 s of its expiry;
-`client.loopback.capabilities()` lists them in that order. With none that can
+A key holds one capability per pool, and may hold capabilities from several
+pools. Of the capabilities that are not spent and not within the nodes'
+expiry margin (one redeem interval plus 120 s, 420 s by default), the gateway
+pays a request that names a namespace with the earliest registered one scoped
+to it, else with the earliest registered `"any"` one; a request that names no
+namespace is paid only by an `"any"` capability
+([capabilities](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md#capabilities)).
+`client.loopback.capabilities()` lists them in registration order. With none that can
 pay, content the gateway must pull fails with `PAYMENT_REQUIRED`; a blob its
 cache holds whole is served at no cost. The gateway keeps its keys and
 capabilities in memory, so a restart loses them. A `dcap1:` token decodes
@@ -195,17 +200,22 @@ offline with `parseCapability`.
 
 A loopback gateway takes no credential. Every request it answers passes a
 browser-header gate instead, so a web page on another origin cannot spend its
-capabilities: it refuses, with `FORBIDDEN` (403), a request marked
-`Sec-Fetch-Site: cross-site`, an `Origin` that is not one of the gateway's
-own (its bare host and its site origins), and a browser request (an `Origin`,
-or a `Mozilla/` user agent) with no `Sec-Fetch-Site`. A client outside a
-browser passes: from Node, the SDK sends no `Origin` and no `Mozilla/` user
-agent. In a browser, the page's own headers decide, so a page on another
-origin is refused.
+capabilities ([cross-origin reads](https://github.com/decdn/decdn/blob/main/adr/appendix-gateway.md#cross-origin-reads)). A top-level `GET`
+navigation (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`) passes
+from any page, so a link opens content. Otherwise it refuses, with
+`FORBIDDEN` (403), a request marked `Sec-Fetch-Site: cross-site`, an `Origin`
+that is not one of the gateway's own (its bare host and its site origins),
+and a browser request (an `Origin`, or a `Mozilla/` user agent) with no
+`Sec-Fetch-Site`. On a site origin, a page's request must also be the site's
+own (`same-origin`), the user's (`none`), or a top-level navigation. A client
+outside a browser passes: from Node, the SDK sends no `Origin` and no
+`Mozilla/` user agent. In a browser, the page's own headers decide, so a page
+on another origin is refused; the browser reports that refusal, which carries
+no CORS headers, as `NETWORK`.
 
 The SDK does not start the gateway. Run it yourself (`decdn gateway`, or the
 `decdn/decdn` Docker image). `open()` treats a `localhost`, `127.0.0.1` or
-`::1` URL as a loopback gateway; a public gateway you run locally needs
+`[::1]` URL as a loopback gateway; a public gateway you run locally needs
 another host name, such as `decdn.localhost`.
 
 ## Pages on a site origin
@@ -292,23 +302,23 @@ are the deployment the gateway verifies against.
 
 ## API at a glance
 
-| Export                                                                          | What it does                                                                                                                                                                                                                   |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `DecdnClient.open(opts?)`                                                       | Opens a client on a public or loopback gateway, or on the site origin a page is served from                                                                                                                                    |
-| `client.get(uri, opts?)`                                                        | Fetches a blob, a bundle, a bundle entry or a range (or, on a site page, a path of its own bundle) as a `DecdnResponse` (`verified`, `body`, `bytes`, `text`, `json`)                                                          |
-| `client.head(uri)`                                                              | The size, hash and content type of what a URI names, without its bytes                                                                                                                                                         |
-| `client.resolve(uri)`                                                           | A URI's kind, hash, bare and site URLs, and its manifest entry (reads the manifest for a bundle or entry)                                                                                                                      |
-| `client.manifest(hashOrUri?, signal?)`                                          | A bundle's verified manifest, read with the URI's `?ns=` hint (a bare hash has none) and cached per client; on a site page, the page's own bundle under its host's namespace when omitted                                      |
-| `client.siteUrl(uri)`, `client.namespaceUrl(ns)`                                | The site URL of a bundle or entry; the URL a namespace's pointer serves at (`https://<ns>.<host>/`). Neither makes a request                                                                                                   |
-| `client.loopback.delegate()`                                                    | The loopback gateway's pending delegate key: the same address until a capability claims it                                                                                                                                     |
-| `client.loopback.registerCapability({ capability, scope })`, `.capabilities()`  | Registers a `dcap1:` capability issued to a key the gateway holds, for any content or for named namespaces (`{ signer, pool, expiry, namespaces? }`); lists the capabilities the gateway holds, in the order it pays with them |
-| `client.pointer.set(args)`                                                      | Signs and publishes a namespace pointer on a public gateway                                                                                                                                                                    |
-| `pointerTypedData`, `pointerSigningHash`, `signPointer`, `recoverPointerSigner` | The pointer's EIP-712 typed data and signing hash, its signature, and the signer a signature recovers to                                                                                                                       |
-| `parseUri`, `formatUri`                                                         | Parse and canonically format a `decdn:` URI, following the Rust client's grammar exactly (`BAD_URI` on anything it refuses)                                                                                                    |
-| `hashToBase32`, `base32ToHash`                                                  | A hash to and from its site label                                                                                                                                                                                              |
-| `blake3Hex`, `createBlake3`                                                     | BLAKE3, one-shot and incremental                                                                                                                                                                                               |
-| `parseManifest`, `parseCapability`                                              | Decodes a v1 bundle manifest, checking its hash when given one; decodes a `dcap1:` token without checking its signature                                                                                                        |
-| `DecdnError`                                                                    | Every failure, with a stable `code` ([Errors](#errors))                                                                                                                                                                        |
+| Export                                                                          | What it does                                                                                                                                                                                                          |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DecdnClient.open(opts?)`                                                       | Opens a client on a public or loopback gateway, or on the site origin a page is served from                                                                                                                           |
+| `client.get(uri, opts?)`                                                        | Fetches a blob, a bundle, a bundle entry or a range (or, on a site page, a path of its own bundle) as a `DecdnResponse` (`verified`, `body`, `bytes`, `text`, `json`)                                                 |
+| `client.head(uri)`                                                              | The size, hash and content type of what a URI names, without its bytes                                                                                                                                                |
+| `client.resolve(uri)`                                                           | A URI's kind, hash, bare and site URLs, and its manifest entry (reads the manifest for a bundle or entry)                                                                                                             |
+| `client.manifest(hashOrUri?, signal?)`                                          | A bundle's verified manifest, read with the URI's `?ns=` hint (a bare hash has none) and cached per client; on a site page, the page's own bundle under its host's namespace when omitted                             |
+| `client.siteUrl(uri)`, `client.namespaceUrl(ns)`                                | The site URL of a bundle or entry; the URL a namespace's pointer serves at (`https://<ns>.<host>/`). Neither makes a request                                                                                          |
+| `client.loopback.delegate()`                                                    | The loopback gateway's pending delegate key: the same address until a capability claims it                                                                                                                            |
+| `client.loopback.registerCapability({ capability, scope })`, `.capabilities()`  | Registers a `dcap1:` capability issued to a key the gateway holds, for any content or for named namespaces (`{ signer, pool, expiry, namespaces? }`); lists the capabilities the gateway holds, in registration order |
+| `client.pointer.set(args)`                                                      | Signs and publishes a namespace pointer on a public gateway                                                                                                                                                           |
+| `pointerTypedData`, `pointerSigningHash`, `signPointer`, `recoverPointerSigner` | The pointer's EIP-712 typed data and signing hash, its signature, and the signer a signature recovers to                                                                                                              |
+| `parseUri`, `formatUri`                                                         | Parse and canonically format a `decdn:` URI, following the Rust client's grammar exactly (`BAD_URI` on anything it refuses)                                                                                           |
+| `hashToBase32`, `base32ToHash`                                                  | A hash to and from its site label                                                                                                                                                                                     |
+| `blake3Hex`, `createBlake3`                                                     | BLAKE3, one-shot and incremental                                                                                                                                                                                      |
+| `parseManifest`, `parseCapability`                                              | Decodes a v1 bundle manifest, checking its hash when given one; decodes a `dcap1:` token without checking its signature                                                                                               |
+| `DecdnError`                                                                    | Every failure, with a stable `code` ([Errors](#errors))                                                                                                                                                               |
 
 Namespaces, sequence numbers, caps and expiries are `bigint`.
 

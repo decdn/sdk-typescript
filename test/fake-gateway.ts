@@ -173,22 +173,32 @@ function quoteNamespaces(body: string): string {
  * shape alone; the real gateway also recovers the pool's owner from the
  * signature.
  */
-function scopeNamespaces(scope: unknown): bigint[] | undefined {
-  if (scope === "any") return [];
+/**
+ * A `PUT /_capability` scope as the gateway parses it: `"any"` (no
+ * namespaces), or u64 namespace ids and the signature as `0x` hex bytes of
+ * any length, which the gateway checks only once it holds the key.
+ */
+function parseScope(
+  scope: unknown,
+): { namespaces: bigint[]; signature?: string } | undefined {
+  if (scope === "any") return { namespaces: [] };
   if (typeof scope !== "object" || scope === null) return undefined;
   const { namespaces, signature, ...rest } = scope as Record<string, unknown>;
   if (Object.keys(rest).length > 0) return undefined;
-  if (typeof signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(signature))
+  if (
+    typeof signature !== "string" ||
+    !/^0x(?:[0-9a-fA-F]{2})*$/.test(signature)
+  )
     return undefined;
-  if (!Array.isArray(namespaces) || namespaces.length === 0) return undefined;
+  if (!Array.isArray(namespaces)) return undefined;
   const ids: bigint[] = [];
   for (const n of namespaces) {
     if (typeof n !== "string" || !/^#\d+$/.test(n)) return undefined;
     const id = BigInt(n.slice(1));
-    if (id < 1n || id >= 1n << 64n) return undefined;
+    if (id >= 1n << 64n) return undefined;
     ids.push(id);
   }
-  return ids;
+  return { namespaces: ids, signature };
 }
 
 /** A capability entry's `"namespaces":[..],` member, or `""` for one that pays for any content. */
@@ -196,6 +206,14 @@ function namespacesJson(r: Registered): string {
   return r.namespaces === undefined
     ? ""
     : `"namespaces":[${r.namespaces.join(",")}],`;
+}
+
+/** Whether `headers` mark a top-level navigation: `navigate` mode, `document` destination. */
+function topLevel(headers: Headers): boolean {
+  return (
+    headers.get("sec-fetch-mode") === "navigate" &&
+    headers.get("sec-fetch-dest") === "document"
+  );
 }
 
 function nowSecs(): bigint {
@@ -238,7 +256,7 @@ export class FakeGateway {
   pending?: string;
   /** Delegate keys a capability has claimed, lowercase. */
   readonly keys = new Set<string>();
-  /** Capabilities in registration order: the order they pay in. */
+  /** Capabilities in registration order, as `GET /_capability` lists them. */
   readonly capabilities: Registered[] = [];
   /** Pools (lowercase) whose pulls stop for funding: a capability on one is spent when it next pays. */
   readonly drained = new Set<string>();
@@ -415,7 +433,8 @@ export class FakeGateway {
       (this.mode === "loopback" &&
         host === `localhost:${this.suffix.split(":")[1]}`);
     let site:
-      { hash: string; namespace?: bigint; pointer?: bigint } | undefined;
+      | { hash: string; namespace?: bigint; pointer?: bigint }
+      | undefined;
     if (labels !== undefined) {
       const parts = labels.split(".");
       const hash =
@@ -496,12 +515,14 @@ export class FakeGateway {
 
   /**
    * A loopback gateway's browser-header gate on every request, in order: a
-   * cross-site request, an `Origin` that is not one of the gateway's own,
-   * and a request that looks like a browser (an `Origin`, or a `Mozilla/`
-   * user agent) with no `Sec-Fetch-Site` are refused; anything else, such as
-   * a client outside a browser, passes.
+   * top-level `GET` navigation passes, from any page; then a cross-site
+   * request, an `Origin` that is not one of the gateway's own, and a request
+   * that looks like a browser (an `Origin`, or a `Mozilla/` user agent) with
+   * no `Sec-Fetch-Site` are refused; anything else, such as a client outside
+   * a browser, passes.
    */
   private gate(req: Request): Response | undefined {
+    if (req.method === "GET" && topLevel(req.headers)) return undefined;
     const fetchSite = req.headers.get("sec-fetch-site");
     if (fetchSite === "cross-site")
       return text(403, "a page on another site may not use the gateway\n");
@@ -522,20 +543,22 @@ export class FakeGateway {
   }
 
   /**
-   * The capability that pays a pull of content in `namespace`: the first held
-   * one that pays for it (any content, or a scope that names `namespace`) and
-   * is not spent and not inside the expiry margin. A pull that stops for
-   * funding on one retires it, and the next takes the request.
+   * The capability that pays a pull selected by `namespace`: among the held
+   * ones that are not spent and not inside the expiry margin, the earliest
+   * registered scoped to `namespace`, else the earliest registered for any
+   * content. A pull that stops for funding on one retires it, and the next
+   * takes the request.
    */
   private payer(namespace: bigint | undefined): Registered | undefined {
     const horizon = nowSecs() + EXPIRY_MARGIN_SECS;
-    for (const r of this.capabilities) {
-      if (r.spent || r.expiry <= horizon) continue;
-      if (
-        r.namespaces !== undefined &&
-        (namespace === undefined || !r.namespaces.includes(namespace))
-      )
-        continue;
+    const usable = this.capabilities.filter(
+      (r) => !r.spent && r.expiry > horizon,
+    );
+    const scoped = usable.filter(
+      (r) => namespace !== undefined && r.namespaces?.includes(namespace),
+    );
+    const any = usable.filter((r) => r.namespaces === undefined);
+    for (const r of [...scoped, ...any]) {
       if (this.drained.has(r.pool)) {
         r.spent = true;
         continue;
@@ -656,13 +679,16 @@ export class FakeGateway {
     ) {
       return text(422, 'expected {"capability", "scope"}\n');
     }
-    const namespaces = scopeNamespaces(fields.scope);
-    if (namespaces === undefined) {
+    const scope = parseScope(fields.scope);
+    if (scope === undefined) {
       return text(
         422,
         'a scope is "any" or {"namespaces": [<id>, ...], "signature": "0x<65-byte hex>"}\n',
       );
     }
+    const { namespaces, signature } = scope;
+    if (signature !== undefined && namespaces.length === 0)
+      return text(422, "a scope names at least one namespace\n");
     let grant;
     try {
       grant = parseCapability(capability.trim());
@@ -684,6 +710,9 @@ export class FakeGateway {
     if (this.capabilities.some((r) => r.signer === signer && r.pool === pool)) {
       return text(409, "that key already holds a capability from this pool\n");
     }
+    // The owner check reads the scope signature after the key checks.
+    if (signature !== undefined && signature.length !== 2 + 65 * 2)
+      return text(422, "the scope signature is malformed\n");
     if (signer === this.pending) delete this.pending;
     this.keys.add(signer);
     const registered: Registered = {
@@ -788,14 +817,17 @@ export class FakeGateway {
     if (req.method !== "GET" && req.method !== "HEAD")
       return text(405, "method not allowed\n");
     // A loopback site spends only for its own pages, the user, and a
-    // top-level navigation.
+    // top-level navigation (no Sec-Fetch-Mode, or navigate, to a document).
     const fetchSite = req.headers.get("sec-fetch-site");
     if (
       this.mode === "loopback" &&
       fetchSite !== null &&
       fetchSite !== "same-origin" &&
       fetchSite !== "none" &&
-      req.headers.get("sec-fetch-mode") !== "navigate"
+      !(
+        (req.headers.get("sec-fetch-mode") ?? "navigate") === "navigate" &&
+        req.headers.get("sec-fetch-dest") === "document"
+      )
     ) {
       return text(
         403,
@@ -822,6 +854,8 @@ export class FakeGateway {
       } catch (e) {
         return text(400, `${(e as Error).message}\n`);
       }
+      // A pointer's namespace pays for the pointer's own bundle alone.
+      const pointer = uri.hash === site.hash ? site.pointer : undefined;
       const navigation =
         (req.headers.get("sec-fetch-mode") ?? "navigate") === "navigate";
       if (uri.kind !== "blob" && (req.method === "HEAD" || navigation)) {
@@ -833,13 +867,14 @@ export class FakeGateway {
           headers: { location: this.siteLocation(uri, directory) },
         });
       } else if (req.method === "HEAD") {
-        response = this.headBlob(uri);
+        response = this.headBlob(uri, pointer);
       } else {
         response = await this.serve(
           uri,
           "site",
           req.headers.get("range"),
           url.search,
+          pointer,
         );
       }
     } else {
@@ -855,7 +890,13 @@ export class FakeGateway {
       response =
         req.method === "HEAD"
           ? this.headSite(uri, url.search)
-          : await this.serve(uri, "site", req.headers.get("range"), url.search);
+          : await this.serve(
+              uri,
+              "site",
+              req.headers.get("range"),
+              url.search,
+              site.pointer,
+            );
     }
     for (const [k, v] of Object.entries(csp)) response.headers.set(k, v);
     return response;
@@ -933,10 +974,18 @@ export class FakeGateway {
   /**
    * Pay for a pull of `uri`: `undefined` once a capability pays, else the
    * refusal (503 on a public gateway, the plain-text 402 on a loopback one).
+   * On a public gateway, `pointer`, the namespace whose pointer serves the
+   * request, selects a scoped capability; on a loopback one, the namespace
+   * `uri` names does.
    */
-  private pay(uri: DecdnUri, hash: string): Response | undefined {
+  private pay(
+    uri: DecdnUri,
+    hash: string,
+    pointer: bigint | undefined,
+  ): Response | undefined {
     if (this.unfunded.has(hash)) return this.cannotPay(uri);
-    if (this.payer(uri.namespace) !== undefined) return undefined;
+    const namespace = this.mode === "public" ? pointer : uri.namespace;
+    if (this.payer(namespace) !== undefined) return undefined;
     return this.mode === "public"
       ? this.cannotPay(uri)
       : text(402, NO_CAPABILITY);
@@ -945,9 +994,9 @@ export class FakeGateway {
   /**
    * `HEAD` of a raw blob on a public gateway: free for a blob whose size is
    * proven, else refused or failed as its `GET` would be before it pays for
-   * the size proof.
+   * the size proof, which `pointer` selects a capability for as `pay` reads it.
    */
-  private headBlob(uri: DecdnUri): Response {
+  private headBlob(uri: DecdnUri, pointer?: bigint): Response {
     const headers: Record<string, string> = {
       "content-type": "application/octet-stream",
       etag: `"${uri.hash}"`,
@@ -956,7 +1005,7 @@ export class FakeGateway {
     const bytes = this.blob(uri.hash, uri.namespace);
     // The empty root is empty, with no proof.
     if (!this.proven.has(uri.hash) && bytes?.length !== 0) {
-      const refused = this.pay(uri, uri.hash);
+      const refused = this.pay(uri, uri.hash, pointer);
       if (refused !== undefined) return refused;
       if (bytes === undefined) return text(404, "not found\n");
       this.proven.add(uri.hash);
@@ -973,6 +1022,7 @@ export class FakeGateway {
     present: "bare" | "site",
     range: string | null,
     query = "",
+    pointer?: bigint,
   ): Promise<Response> {
     // A raw blob the cache holds whole, and the empty root, need nothing that
     // pays; every other answer is a paid pull.
@@ -981,7 +1031,7 @@ export class FakeGateway {
       (this.cached.has(uri.hash) ||
         this.blob(uri.hash, uri.namespace)?.length === 0);
     if (!free) {
-      const refused = this.pay(uri, uri.hash);
+      const refused = this.pay(uri, uri.hash, pointer);
       if (refused !== undefined) return refused;
     }
     if (uri.kind === "blob") {

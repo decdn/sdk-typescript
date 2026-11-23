@@ -61,7 +61,7 @@ function linkUri(link: string | null): string | undefined {
 /** The error for a gateway answer that is not a success. Reads the body. */
 export async function errorOf(response: Response): Promise<DecdnError> {
   const status = response.status;
-  const code = CODES[status] ?? "HTTP";
+  let code = CODES[status] ?? "HTTP";
   let body = "";
   try {
     body = await response.text();
@@ -95,6 +95,9 @@ export async function errorOf(response: Response): Promise<DecdnError> {
       // Not JSON after all: the text stands.
     }
   }
+  // The gateway's 503 names the URI it cannot pay for; another 503, such as
+  // a proxy's, says nothing about payment.
+  if (status === 503 && details.fallbackUri === undefined) code = "HTTP";
   if (status === 416) {
     const size = /^bytes \*\/(\d+)$/.exec(
       response.headers.get("content-range") ?? "",
@@ -111,9 +114,21 @@ export async function errorOf(response: Response): Promise<DecdnError> {
 /**
  * `text` parsed as JSON with the integer values of `fields`, and the integers
  * of a list under one of `fields`, read as `bigint`: the gateway writes u64
- * ids, caps and expiries as JSON numbers, which may exceed 2^53.
+ * ids, caps and expiries as JSON numbers, which may exceed 2^53. `HTTP` for
+ * an answer that is not JSON.
  */
 export function parseWithBigInts(text: string, fields: string[]): unknown {
+  try {
+    return parseBig(text, fields);
+  } catch (e) {
+    throw new DecdnError("HTTP", "the gateway answered with no JSON", {
+      body: text,
+      cause: e,
+    });
+  }
+}
+
+function parseBig(text: string, fields: string[]): unknown {
   const names = fields.join("|");
   const quoted = text.replace(
     new RegExp(`("(?:${names})"\\s*:\\s*)(\\d+|\\[[\\d\\s,]*\\])`, "g"),

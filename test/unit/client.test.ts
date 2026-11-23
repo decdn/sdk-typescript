@@ -583,6 +583,49 @@ describe("public context", () => {
     expect(e.retryAfterSecs).toBe(60);
   });
 
+  it("maps a 503 that names no fallback URI, and a 401, to HTTP", async () => {
+    const { fake, blob } = publicFake();
+    for (const [status, body, headers] of [
+      [503, "<h1>maintenance</h1>", { "retry-after": "5" }],
+      [401, "token required\n", {}],
+    ] as const) {
+      const c = await open(fake, {
+        fetch: () => Promise.resolve(new Response(body, { status, headers })),
+      });
+      const e = await rejects(c.get(`decdn:${blob}`), "HTTP");
+      expect(e.status).toBe(status);
+    }
+  });
+
+  it("pays with a namespace-scoped capability only on its pointer's host, for the pointer's bundle", async () => {
+    const { fake, bundle, blob } = publicFake(false);
+    fake.capabilities.push({
+      signer: "0x00000000000000000000000000000000000000a1",
+      pool: `0x${"11".repeat(32)}`,
+      cap: 10_000_000n,
+      expiry: 1_900_000_000n,
+      namespaces: [7n],
+      spent: false,
+    });
+    fake.pointers.set(7n, bundle.hash);
+    const label = hashToBase32(bundle.hash);
+    const cors = { headers: { "sec-fetch-mode": "cors" } };
+    for (const url of [
+      "http://7.decdn.test/a.txt",
+      `http://7.decdn.test/_decdn/${bundle.hash}/a.txt`,
+    ]) {
+      expect((await fake.fetch(url, cors)).status, url).toBe(200);
+    }
+    for (const url of [
+      `http://7.${label}.decdn.test/a.txt`,
+      `http://decdn.test/${blob}?ns=7`,
+      `http://7.decdn.test/_decdn/${blob}`,
+    ]) {
+      expect((await fake.fetch(url, cors)).status, url).toBe(503);
+    }
+    expect(fake.paid).toHaveLength(2);
+  });
+
   it("serves a blob its cache holds whole when nothing can pay", async () => {
     const { fake, blob } = publicFake();
     const c = await open(fake);
@@ -1097,6 +1140,47 @@ describe("loopback context", () => {
     );
     const sdk = await get(`${bundle.hash}/a.txt`, {});
     expect(sdk.status).toBe(200);
+    // A top-level navigation passes from any page; a frame's does not.
+    const link = {
+      "sec-fetch-site": "cross-site",
+      "sec-fetch-mode": "navigate",
+      "user-agent": "Mozilla/5.0",
+    };
+    const opened = await get(blob, { ...link, "sec-fetch-dest": "document" });
+    expect(opened.status).toBe(200);
+    const framed = await get(blob, { ...link, "sec-fetch-dest": "iframe" });
+    expect(await framed.text()).toBe(
+      "a page on another site may not use the gateway\n",
+    );
+  });
+
+  it("spends on a site origin only for its own pages, the user, and a top-level navigation", async () => {
+    const { fake, bundle } = loopbackFake();
+    const site = `http://${hashToBase32(bundle.hash)}.localhost:8484/a.txt`;
+    const from = (headers: Record<string, string>) =>
+      fake.fetch(site, { headers });
+    const sameSite = { "sec-fetch-site": "same-site" };
+    for (const headers of [
+      { "sec-fetch-site": "same-origin" },
+      { "sec-fetch-site": "none" },
+      {
+        ...sameSite,
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+      },
+      { ...sameSite, "sec-fetch-dest": "document" },
+    ]) {
+      expect((await from(headers)).status, JSON.stringify(headers)).toBe(200);
+    }
+    for (const headers of [
+      { ...sameSite, "sec-fetch-mode": "cors" },
+      { ...sameSite, "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" },
+    ]) {
+      const r = await from(headers);
+      expect(await r.text(), JSON.stringify(headers)).toBe(
+        "a site answers only its own pages and top-level navigation\n",
+      );
+    }
   });
 
   it("does not read a directory's index.html by the directory's path, as the bare host does not", async () => {
@@ -1292,7 +1376,7 @@ describe("site context", () => {
     ]);
   });
 
-  it("opens a loopback gateway named by URL, for its delegate API, even on a site page", async () => {
+  it("opens the site on a loopback site page, whatever gateway URL it names", async () => {
     const fake = new FakeGateway({ mode: "loopback" });
     const page = `http://${hashToBase32("ab".repeat(32))}.localhost:8484`;
     vi.stubGlobal("location", new URL(`${page}/`));
@@ -1300,10 +1384,19 @@ describe("site context", () => {
       gatewayUrl: fake.url,
       fetch: fake.fetch,
     });
+    expect(c.context).toBe("site");
+    expect(c.origin).toBe(page);
+    await rejects(c.loopback.delegate(), "CONFIG");
+  });
+
+  it("opens a loopback gateway named by URL on a page that is not a site", async () => {
+    const fake = new FakeGateway({ mode: "loopback" });
+    vi.stubGlobal("location", new URL(`${fake.url}/`));
+    const c = await DecdnClient.open({
+      gatewayUrl: fake.url,
+      fetch: fake.fetch,
+    });
     expect(c.context).toBe("loopback");
-    expect(c.origin).toBe(new URL(fake.url).origin);
-    expect((await c.loopback.delegate()).address).toMatch(/^0x[0-9a-f]{40}$/i);
-    expect(paths(fake)).toEqual([`GET ${new URL(fake.url).host}/_delegate`]);
   });
 
   it("opens the site without a gateway URL", async () => {

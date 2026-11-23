@@ -5,7 +5,8 @@
 //   gateway holds that can pay.
 // - `loopback`: the local gateway; content on the bare host, paid by the
 //   first capability the gateway holds that can pay. It serves a client
-//   outside a browser, and a page only on its own site origins.
+//   outside a browser, a top-level navigation from any page, and other page
+//   requests only from its own origins.
 // - `site`: a page served from a site origin; its own entries same-origin and
 //   other content through `/_decdn/`.
 import { base32ToHash, hashToBase32 } from "./base32.js";
@@ -215,10 +216,7 @@ function siteOf(
 
 function isLoopbackHost(hostname: string): boolean {
   return (
-    hostname === "127.0.0.1" ||
-    hostname === "localhost" ||
-    hostname === "[::1]" ||
-    hostname === "::1"
+    hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]"
   );
 }
 
@@ -345,9 +343,10 @@ export class DecdnClient {
   /**
    * A client for the gateway at `gatewayUrl`, or, in a page served from a
    * site origin (`[<ns>.]<hash32>.<host>`, or `<ns>.<host>` under the
-   * configured gateway), for that site. A `localhost`, `127.0.0.1` or `::1`
-   * `gatewayUrl` opens the loopback gateway, which serves its content to a
-   * client outside a browser and refuses a page on another origin.
+   * configured gateway), for that site, whatever `gatewayUrl` names. A
+   * `localhost`, `127.0.0.1` or `[::1]` `gatewayUrl` opens the loopback
+   * gateway, which serves its content to a client outside a browser and
+   * refuses a page on another origin.
    */
   static async open(opts: OpenOptions = {}): Promise<DecdnClient> {
     let gateway: URL | undefined;
@@ -367,7 +366,6 @@ export class DecdnClient {
       globalThis as { location?: { protocol?: string; host?: string } }
     ).location;
     if (
-      !loopback &&
       loc?.host !== undefined &&
       loc.host !== "" &&
       loc.protocol !== undefined

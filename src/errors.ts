@@ -1,6 +1,6 @@
 /** What went wrong, as a stable code a caller can branch on. */
 export type DecdnErrorCode =
-  /** 402 or 503: nothing the gateway holds can pay for a pull right now. */
+  /** 402, or a 503 that names a fallback URI: nothing the gateway holds can pay for a pull right now. */
   | "PAYMENT_REQUIRED"
   /** 404. */
   | "NOT_FOUND"
@@ -32,7 +32,7 @@ export type DecdnErrorCode =
   | "NETWORK"
   /** The client is not set up for the call, or the call cannot be honoured as asked. */
   | "CONFIG"
-  /** A status the gateway contract does not name. */
+  /** A status, or a success body, the gateway contract does not name. */
   | "HTTP";
 
 /** Fields a {@link DecdnError} may carry besides its code and message. */

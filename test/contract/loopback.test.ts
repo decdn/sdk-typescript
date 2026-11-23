@@ -75,7 +75,7 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
       expect(e.fallbackUri).toBeUndefined();
     });
 
-    it("refuses a registration with no scope, a scope other than any, or a field besides them", async () => {
+    it("refuses a registration with no scope, a scope word other than any, or a field besides them", async () => {
       for (const body of [
         { capability: c.capability },
         { capability: c.capability, scope: "*" },
@@ -253,6 +253,43 @@ describe.skipIf(run === undefined || !shippedAfter("0.3.1"))(
       });
       expect(r.status).toBe(403);
       expect(await r.text()).toBe(NO_FETCH_SITE);
+    });
+
+    it("checks the site before the origin, and the origin before a missing Sec-Fetch-Site", async () => {
+      for (const [headers, body] of [
+        [
+          { "sec-fetch-site": "cross-site", origin: "https://app.example" },
+          ANOTHER_SITE,
+        ],
+        [
+          { origin: "https://app.example", "user-agent": "Mozilla/5.0" },
+          ANOTHER_ORIGIN,
+        ],
+      ] as const) {
+        const r = await raw(`/${c.blob}`, { headers });
+        expect(r.status, body).toBe(403);
+        expect(await r.text()).toBe(body);
+      }
+    });
+
+    it("lets a top-level navigation from another site through, and refuses a frame's", async () => {
+      const link = {
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
+        "user-agent": "Mozilla/5.0",
+      };
+      const opened = await raw(`/${c.blob}`, {
+        headers: { ...link, "sec-fetch-dest": "document" },
+      });
+      expect(opened.status).toBe(200);
+      expect(blake3Hex(new Uint8Array(await opened.arrayBuffer()))).toBe(
+        c.blob,
+      );
+      const framed = await raw(`/${c.blob}`, {
+        headers: { ...link, "sec-fetch-dest": "iframe" },
+      });
+      expect(framed.status).toBe(403);
+      expect(await framed.text()).toBe(ANOTHER_SITE);
     });
 
     it("sends a browser's navigation to an entry to its site", async () => {

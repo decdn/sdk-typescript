@@ -65,6 +65,14 @@ export function integer(value: bigint | number, what: string): bigint {
   return BigInt(value);
 }
 
+/** @internal `value` as a namespace id: `CONFIG` unless it is a u64 of at least 1. */
+export function namespaceId(value: bigint | number): bigint {
+  const id = integer(value, "a namespace id");
+  if (id < 1n || id > U64_MAX)
+    throw bad("a namespace id is a u64 of at least 1");
+  return id;
+}
+
 /** The domain's chain id: an integer of at least 1 that fits a uint256. */
 function chainIdOf(domain: PointerDomain): bigint {
   const id = integer(domain.chainId, "a chain id");
@@ -103,8 +111,7 @@ function address(s: string): Uint8Array {
 }
 
 function checked(p: Pointer): Uint8Array {
-  if (p.namespace < 1n || p.namespace > U64_MAX)
-    throw bad("a namespace id is a u64 of at least 1");
+  namespaceId(p.namespace);
   if (p.seq < 0n || p.seq > U64_MAX) throw bad("a pointer seq is a u64");
   const root = p.root.startsWith("0x") ? p.root.slice(2) : p.root;
   const bytes = isHash(root) ? fromHex(root) : undefined;
