@@ -92,6 +92,7 @@ async function fake(
       `<a href="decdn:${blob}">blob</a>\n`,
     ),
     "data.bin": bytes(256 * 1024, 0xda7a),
+    "docs/index.html": new TextEncoder().encode("<p>docs</p>\n"),
   };
   const manifest = gw.addBundle(files);
   const listener = await gw.listen();

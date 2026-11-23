@@ -913,6 +913,19 @@ describe("public context", () => {
     expect(fake.allowance).toBe((1 << 20) - 16 * 1024);
   });
 
+  it("redirects HEAD of a directory under a site's /_decdn/ to the directory on its site, with no pull", async () => {
+    const { fake } = publicFake(1 << 20);
+    const docs = fake.addBundle({ "docs/index.html": "<p>docs</p>" });
+    const site = `http://${hashToBase32(docs.hash)}.decdn.test`;
+    const r = await fake.fetch(`${site}/_decdn/${docs.hash}/docs/`, {
+      method: "HEAD",
+      redirect: "manual",
+    });
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toBe(`${site}/docs/`);
+    expect(fake.allowance).toBe(1 << 20);
+  });
+
   it("answers the empty blob with no proof", async () => {
     const { fake } = publicFake(1);
     const empty = fake.addBlob("");
