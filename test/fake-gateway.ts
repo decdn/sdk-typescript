@@ -714,16 +714,18 @@ export class FakeGateway {
       } catch (e) {
         return text(400, `${(e as Error).message}\n`);
       }
-      if (req.method === "HEAD") {
-        // A bundle's pages run on their own site: HEAD redirects there, at
-        // no pull.
-        response =
-          uri.kind === "blob"
-            ? this.headBlob(uri)
-            : new Response(null, {
-                status: 302,
-                headers: { location: this.siteLocation(uri, directory) },
-              });
+      const navigation =
+        (req.headers.get("sec-fetch-mode") ?? "navigate") === "navigate";
+      if (uri.kind !== "blob" && (req.method === "HEAD" || navigation)) {
+        // A HEAD or a navigation (no Sec-Fetch-Mode, or navigate) of a
+        // bundle or an entry redirects to its site, a directory to the
+        // directory, without reading the manifest or charging.
+        response = new Response(null, {
+          status: 302,
+          headers: { location: this.siteLocation(uri, directory) },
+        });
+      } else if (req.method === "HEAD") {
+        response = this.headBlob(uri);
       } else {
         response = await this.serve(
           uri,
@@ -773,9 +775,9 @@ export class FakeGateway {
 
   /**
    * A site's answer for `path`, which `manifest` has no entry at: a
-   * redirect to the directory when it has an `index.html`, relative to the
-   * request, so it holds under `/_decdn/` too, with the request's `query`
-   * (`?…`, or empty) kept; else 404.
+   * redirect to the directory, with the request's `query` (`?…`, or empty)
+   * kept, when it has an `index.html`; else 404. The location is relative
+   * to the request, so it holds under `/_decdn/` too.
    */
   private directory(
     uri: DecdnUri,

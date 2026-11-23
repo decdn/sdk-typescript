@@ -208,7 +208,9 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
       if (index === undefined)
         throw new Error("the fixture bundle has no docs/index.html");
       const site = new URL(client.siteUrl(`decdn:${c.bundle}/`)).origin;
-      // A page's own request, not a navigation.
+      // The gateway treats a request without Sec-Fetch-Mode as a navigation
+      // and redirects it from /_decdn/ to the bundle's site; these headers
+      // make it a page's own request.
       const page = {
         redirect: "manual",
         headers: { "sec-fetch-mode": "cors", "sec-fetch-site": "same-origin" },
@@ -223,22 +225,23 @@ describe.skipIf(run === undefined)("public gateway contract", () => {
         );
         expect(r.status).toBe(302);
         expect(r.headers.get("location")).toBe(location);
-        const dir = await c.fetch(
-          `${site}/_decdn/${c.bundle}/docs/${query}`,
-          page,
-        );
-        expect(dir.status).toBe(200);
-        expect(new Uint8Array(await dir.arrayBuffer())).toEqual(index);
       }
+      // `?ns=` routes the pull by a namespace the network need not serve, so
+      // the directory's index is fetched without it.
+      const dir = await c.fetch(`${site}/_decdn/${c.bundle}/docs/`, page);
+      expect(dir.status).toBe(200);
+      expect(new Uint8Array(await dir.arrayBuffer())).toEqual(index);
       const head = await c.fetch(`${site}/_decdn/${c.bundle}/docs/`, {
         ...page,
         method: "HEAD",
       });
       expect(head.status).toBe(302);
       expect(head.headers.get("location")).toBe(`${site}/docs/`);
-      const own = await c.fetch(`${site}/docs?tab=2`, page);
-      expect(own.status).toBe(302);
-      expect(own.headers.get("location")).toBe("docs/?tab=2");
+      for (const method of ["GET", "HEAD"]) {
+        const own = await c.fetch(`${site}/docs?tab=2`, { ...page, method });
+        expect(own.status, method).toBe(302);
+        expect(own.headers.get("location"), method).toBe("docs/?tab=2");
+      }
     });
   }
 
