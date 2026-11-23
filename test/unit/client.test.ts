@@ -913,17 +913,44 @@ describe("public context", () => {
     expect(fake.allowance).toBe((1 << 20) - 16 * 1024);
   });
 
-  it("redirects HEAD of a directory under a site's /_decdn/ to the directory on its site, with no pull", async () => {
+  it("redirects HEAD of bundle content under a site's /_decdn/ to its site, a directory to the directory, with no pull", async () => {
     const { fake } = publicFake(1 << 20);
-    const docs = fake.addBundle({ "docs/index.html": "<p>docs</p>" });
+    const docs = fake.addBundle({
+      "docs/index.html": "<p>docs</p>",
+      "a.txt": "abc",
+    });
+    const label = hashToBase32(docs.hash);
+    const site = `http://${label}.decdn.test`;
+    const head = (url: string) =>
+      fake.fetch(url, { method: "HEAD", redirect: "manual" });
+    for (const [path, location] of [
+      ["docs/", `${site}/docs/`],
+      ["docs/?ns=7", `http://7.${label}.decdn.test/docs/`],
+      ["a.txt", `${site}/a.txt`],
+      ["", `${site}/`],
+    ]) {
+      const r = await head(`${site}/_decdn/${docs.hash}/${path}`);
+      expect(r.status, path).toBe(302);
+      expect(r.headers.get("location"), path).toBe(location);
+    }
+    expect(fake.allowance).toBe(1 << 20);
+  });
+
+  it("keeps the query on a site directory's redirect, and answers 404 for a directory with no index.html under /_decdn/", async () => {
+    const { fake } = publicFake();
+    const docs = fake.addBundle({
+      "docs/index.html": "<p>docs</p>",
+      "css/site.css": "a { color: red }",
+    });
     const site = `http://${hashToBase32(docs.hash)}.decdn.test`;
-    const r = await fake.fetch(`${site}/_decdn/${docs.hash}/docs/`, {
+    const own = await fake.fetch(`${site}/docs?tab=2`, {
       method: "HEAD",
       redirect: "manual",
     });
-    expect(r.status).toBe(302);
-    expect(r.headers.get("location")).toBe(`${site}/docs/`);
-    expect(fake.allowance).toBe(1 << 20);
+    expect(own.status).toBe(302);
+    expect(own.headers.get("location")).toBe("docs/?tab=2");
+    const css = await fake.fetch(`${site}/_decdn/${docs.hash}/css/`);
+    expect(css.status).toBe(404);
   });
 
   it("answers the empty blob with no proof", async () => {
