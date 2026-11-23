@@ -433,8 +433,7 @@ export class FakeGateway {
       (this.mode === "loopback" &&
         host === `localhost:${this.suffix.split(":")[1]}`);
     let site:
-      | { hash: string; namespace?: bigint; pointer?: bigint }
-      | undefined;
+      { hash: string; namespace?: bigint; pointer?: bigint } | undefined;
     if (labels !== undefined) {
       const parts = labels.split(".");
       const hash =
