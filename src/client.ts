@@ -214,9 +214,19 @@ function siteOf(
   return undefined;
 }
 
+/**
+ * Whether a URL's `hostname` names this machine: `localhost`, an address in
+ * 127.0.0.0/8, or `[::1]`. The URL parser writes IPv4 as a dotted quad and
+ * IPv6 in its shortest form, so `[0:0:0:0:0:0:0:1]` arrives as `[::1]` and
+ * the IPv4-mapped `[::ffff:127.0.0.1]` as `[::ffff:7f00:1]`, which is not
+ * loopback.
+ */
 function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
   return (
-    hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]"
+    host === "localhost" ||
+    host === "[::1]" ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
   );
 }
 
@@ -344,8 +354,8 @@ export class DecdnClient {
    * A client for the gateway at `gatewayUrl`, or, in a page served from a
    * site origin (`[<ns>.]<hash32>.<host>`, or `<ns>.<host>` under the
    * configured gateway), for that site, whatever `gatewayUrl` names. A
-   * `localhost`, `127.0.0.1` or `[::1]` `gatewayUrl` opens the loopback
-   * gateway, which serves its content to a client outside a browser and
+   * `gatewayUrl` on `localhost` or a loopback address (127.0.0.0/8, `[::1]`)
+   * opens the loopback gateway, which serves its content to a client outside a browser and
    * refuses a page on another origin.
    */
   static async open(opts: OpenOptions = {}): Promise<DecdnClient> {

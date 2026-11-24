@@ -168,7 +168,7 @@ function quoteNamespaces(body: string): string {
 
 /**
  * The namespaces of a registration's `scope`: `[]` for `"any"`, the ids of a
- * well-formed namespace scope (a non-empty list of positive u64s and a `0x`
+ * well-formed namespace scope (a non-empty list of u64s and a `0x`
  * 65-byte hex signature), `undefined` for any other. The fake checks the
  * shape alone; the real gateway also recovers the pool's owner from the
  * signature.

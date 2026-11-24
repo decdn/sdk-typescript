@@ -119,6 +119,39 @@ describe("pointer.set", () => {
     ).toBe("<p>hi</p>");
   });
 
+  it("reports an answer outside the contract as HTTP, with the body", async () => {
+    const good = {
+      namespace: 7,
+      root: "ab".repeat(32),
+      seq: 5,
+      url: "http://7.decdn.test/",
+    };
+    for (const body of [
+      "<h1>another server</h1>",
+      JSON.stringify({ ...good, url: undefined }),
+      JSON.stringify({ ...good, seq: "5" }),
+    ]) {
+      const c = await DecdnClient.open({
+        gatewayUrl: "http://decdn.test",
+        pointer: domain,
+        fetch: () => Promise.resolve(new Response(body)),
+      });
+      const set = c.pointer.set({
+        namespace: 7n,
+        root: good.root,
+        seq: 5n,
+        signer: { privateKey: fixture.privateKey },
+      });
+      await expect(set).rejects.toMatchObject({
+        code: "HTTP",
+        body,
+        message: expect.stringMatching(
+          /^the gateway's answer to \/_pointer is not the JSON its contract names: /,
+        ),
+      });
+    }
+  });
+
   it("maps a replayed seq to CONFLICT with the held seq", async () => {
     const fake = gateway();
     const bundle = fake.addBundle({ "a.txt": "a" });

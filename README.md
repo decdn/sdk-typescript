@@ -214,9 +214,9 @@ on another origin is refused; the browser reports that refusal, which carries
 no CORS headers, as `NETWORK`.
 
 The SDK does not start the gateway. Run it yourself (`decdn gateway`, or the
-`decdn/decdn` Docker image). `open()` treats a `localhost`, `127.0.0.1` or
-`[::1]` URL as a loopback gateway; a public gateway you run locally needs
-another host name, such as `decdn.localhost`.
+`decdn/decdn` Docker image). `open()` treats a URL on `localhost` or a
+loopback address (127.0.0.0/8, `[::1]`) as a loopback gateway; a public
+gateway you run locally needs another host name, such as `decdn.localhost`.
 
 ## Pages on a site origin
 

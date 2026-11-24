@@ -13,7 +13,7 @@ import type { DecdnClient } from "./client.js";
 import { DecdnError } from "./errors.js";
 import { fromHex, isHash, toHex } from "./hex.js";
 import { concat } from "./bytes.js";
-import { parseWithBigInts, sendOk } from "./http.js";
+import { big, readJson, record, sendOk, str } from "./http.js";
 import { parseUri, SCHEME } from "./uri.js";
 
 /** The chain a pointer is signed for: the EIP-712 domain of `PUT /_pointer`. */
@@ -317,9 +317,19 @@ export class PointerApi {
       `${this.client.origin}/_pointer`,
       init,
     );
-    return parseWithBigInts(await response.text(), [
-      "namespace",
-      "seq",
-    ]) as PointerSet;
+    return readJson(
+      "/_pointer",
+      await response.text(),
+      ["namespace", "seq"],
+      (json) => {
+        const o = record(json, "the answer");
+        return {
+          namespace: big(o, "namespace"),
+          root: str(o, "root"),
+          seq: big(o, "seq"),
+          url: str(o, "url"),
+        };
+      },
+    );
   }
 }

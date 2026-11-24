@@ -1,4 +1,5 @@
-// The loopback gateway's API
+// The gateway's delegate and capability API, which the SDK offers on a
+// loopback client
 // (https://github.com/decdn/decdn/blob/main/crates/cli/src/commands/gateway.rs):
 // `GET /_delegate` names the gateway's pending delegate key, `PUT /_capability`
 // registers a `dcap1:` capability issued to a key the gateway holds, and
@@ -6,7 +7,7 @@
 // cross-origin, so a web page cannot call them.
 import type { DecdnClient } from "./client.js";
 import { DecdnError } from "./errors.js";
-import { parseWithBigInts, sendOk } from "./http.js";
+import { big, bigs, bool, readJson, record, sendOk, str } from "./http.js";
 import { namespaceId } from "./pointer.js";
 
 /**
@@ -62,7 +63,7 @@ export class LoopbackApi {
     if (this.client.context !== "loopback") {
       throw new DecdnError(
         "CONFIG",
-        "the delegate and capability API is a loopback gateway's alone",
+        "the SDK offers the delegate and capability API on a loopback client alone: open one on a localhost or loopback-address URL",
       );
     }
     const init: RequestInit = { method };
@@ -84,13 +85,12 @@ export class LoopbackApi {
    * memory, so a restart loses them and every capability issued to them.
    */
   async delegate(): Promise<{ address: string }> {
-    const parsed = parseWithBigInts(
+    return readJson(
+      "/_delegate",
       await this.call("GET", "/_delegate"),
       [],
-    ) as {
-      address: string;
-    };
-    return { address: parsed.address };
+      (json) => ({ address: str(record(json, "the answer"), "address") }),
+    );
   }
 
   /**
@@ -110,18 +110,17 @@ export class LoopbackApi {
       "/_capability",
       `{"capability":${JSON.stringify(args.capability)},"scope":${scopeJson(args.scope)}}`,
     );
-    const parsed = parseWithBigInts(text, [
-      "expiry",
-      "namespaces",
-    ]) as Registration;
-    const registration: Registration = {
-      signer: parsed.signer,
-      pool: parsed.pool,
-      expiry: parsed.expiry,
-    };
-    if (parsed.namespaces !== undefined)
-      registration.namespaces = parsed.namespaces;
-    return registration;
+    return readJson("/_capability", text, ["expiry", "namespaces"], (json) => {
+      const o = record(json, "the answer");
+      const registration: Registration = {
+        signer: str(o, "signer"),
+        pool: str(o, "pool"),
+        expiry: big(o, "expiry"),
+      };
+      const namespaces = bigs(o, "namespaces");
+      if (namespaces !== undefined) registration.namespaces = namespaces;
+      return registration;
+    });
   }
 
   /**
@@ -132,11 +131,28 @@ export class LoopbackApi {
    */
   async capabilities(): Promise<RegisteredCapability[]> {
     const text = await this.call("GET", "/_capability");
-    return parseWithBigInts(text, [
-      "cap",
-      "expiry",
-      "namespaces",
-    ]) as RegisteredCapability[];
+    return readJson(
+      "/_capability",
+      text,
+      ["cap", "expiry", "namespaces"],
+      (json) => {
+        if (!Array.isArray(json))
+          throw new TypeError("the answer is not a list");
+        return json.map((entry: unknown) => {
+          const o = record(entry, "an entry");
+          const namespaces = bigs(o, "namespaces");
+          // The keys in the order the gateway lists them.
+          return {
+            cap: big(o, "cap"),
+            expiry: big(o, "expiry"),
+            ...(namespaces === undefined ? {} : { namespaces }),
+            pool: str(o, "pool"),
+            signer: str(o, "signer"),
+            spent: bool(o, "spent"),
+          };
+        });
+      },
+    );
   }
 }
 

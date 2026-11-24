@@ -219,23 +219,98 @@ describe("loopback API", () => {
     expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
   });
 
-  it("reports an answer that is not JSON as HTTP", async () => {
+  const SIGNER = `0x${"11".repeat(20)}`;
+  const answers = {
+    delegate: {
+      path: "/_delegate",
+      call: (c: DecdnClient) => c.loopback.delegate(),
+      good: { address: SIGNER },
+      missing: "address",
+      wrong: { address: 7 },
+    },
+    registerCapability: {
+      path: "/_capability",
+      call: (c: DecdnClient) =>
+        c.loopback.registerCapability({ capability: "dcap1:x", scope: "any" }),
+      good: { signer: SIGNER, pool: POOL_A, expiry: 9 },
+      missing: "pool",
+      wrong: { signer: SIGNER, pool: POOL_A, expiry: "9" },
+    },
+    capabilities: {
+      path: "/_capability",
+      call: (c: DecdnClient) => c.loopback.capabilities(),
+      good: [{ signer: SIGNER, pool: POOL_A, cap: 1, expiry: 9, spent: false }],
+      missing: "spent",
+      wrong: [
+        {
+          signer: SIGNER,
+          pool: POOL_A,
+          cap: 1,
+          expiry: 9,
+          spent: false,
+          namespaces: [7, "8"],
+        },
+      ],
+    },
+  };
+
+  async function refusal(
+    body: string,
+    call: (c: DecdnClient) => Promise<unknown>,
+  ): Promise<DecdnError> {
     const c = await DecdnClient.open({
       gatewayUrl: "http://127.0.0.1:8484",
-      fetch: () => Promise.resolve(new Response("<h1>another server</h1>")),
+      fetch: () => Promise.resolve(new Response(body)),
     });
-    for (const call of [c.loopback.delegate(), c.loopback.capabilities()]) {
-      expect(await code(call)).toBe("HTTP");
+    try {
+      await call(c);
+    } catch (e) {
+      expect(e).toBeInstanceOf(DecdnError);
+      return e as DecdnError;
     }
-  });
+    throw new Error("resolved");
+  }
 
-  it("is a loopback gateway's alone", async () => {
+  it.each(Object.entries(answers))(
+    "reports %s's answer outside the contract as HTTP, with the body",
+    async (_name, a) => {
+      const missing = JSON.stringify(a.good, (key, value: unknown) =>
+        key === a.missing ? undefined : value,
+      );
+      for (const body of [
+        "<h1>another server</h1>",
+        missing,
+        JSON.stringify(a.wrong),
+      ]) {
+        const e = await refusal(body, a.call);
+        expect(e.code).toBe("HTTP");
+        expect(e.message).toMatch(
+          `the gateway's answer to ${a.path} is not the JSON its contract names: `,
+        );
+        expect(e.body).toBe(body);
+      }
+      expect(
+        await a.call(
+          await DecdnClient.open({
+            gatewayUrl: "http://127.0.0.1:8484",
+            fetch: () => Promise.resolve(new Response(JSON.stringify(a.good))),
+          }),
+        ),
+      ).toBeDefined();
+    },
+  );
+
+  it("is offered on a loopback client alone", async () => {
     const fake = new FakeGateway({ mode: "public" });
     const c = await DecdnClient.open({
       gatewayUrl: fake.url,
       fetch: fake.fetch,
     });
-    expect(await code(c.loopback.delegate())).toBe("CONFIG");
+    await expect(c.loopback.delegate()).rejects.toMatchObject({
+      code: "CONFIG",
+      message:
+        "the SDK offers the delegate and capability API on a loopback client alone: open one on a localhost or loopback-address URL",
+    });
     expect(fake.seen).toHaveLength(0);
   });
 });

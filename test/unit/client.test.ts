@@ -86,6 +86,35 @@ describe("DecdnClient.open", () => {
     ).toBe("public");
   });
 
+  it.each([
+    "localhost",
+    "LOCALHOST",
+    "127.0.0.1",
+    "127.1.2.3",
+    "127.255.255.254",
+    "127.1",
+    "[::1]",
+    "[0:0:0:0:0:0:0:1]",
+  ])("opens a loopback client on %s", async (host) => {
+    const c = await DecdnClient.open({ gatewayUrl: `http://${host}:8484` });
+    expect(c.context).toBe("loopback");
+  });
+
+  it("normalises an IPv6 loopback spelling to [::1]", () => {
+    expect(new URL("http://[0:0:0:0:0:0:0:1]:8484").hostname).toBe("[::1]");
+  });
+
+  it.each([
+    "decdn.localhost",
+    "0.0.0.0",
+    "[::ffff:127.0.0.1]",
+    "128.0.0.1",
+    "126.0.0.1",
+  ])("opens a public client on %s", async (host) => {
+    const c = await DecdnClient.open({ gatewayUrl: `http://${host}:8484` });
+    expect(c.context).toBe("public");
+  });
+
   it("refuses no gateway outside a site page, and a URL that does not parse", async () => {
     await rejects(DecdnClient.open({}), "CONFIG");
     await rejects(DecdnClient.open({ gatewayUrl: "not a url" }), "CONFIG");

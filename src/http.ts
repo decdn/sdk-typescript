@@ -112,33 +112,94 @@ export async function errorOf(response: Response): Promise<DecdnError> {
 }
 
 /**
- * `text` parsed as JSON with the integer values of `fields`, and the integers
- * of a list under one of `fields`, read as `bigint`: the gateway writes u64
- * ids, caps and expiries as JSON numbers, which may exceed 2^53. `HTTP` for
- * an answer that is not JSON.
+ * What `read` makes of `text`, the gateway's success answer to `path`, parsed
+ * as JSON with the integer values of `fields`, and the integers of a list
+ * under one of `fields`, read as `bigint`: the gateway writes u64 ids, caps
+ * and expiries as JSON numbers, which may exceed 2^53. `read` takes the
+ * fields it returns with `record`, `str`, `big`, `bool` and `bigs`. `HTTP`,
+ * carrying the body, for an answer that is not JSON or lacks a field its
+ * contract names, or has one of another type.
  */
-export function parseWithBigInts(text: string, fields: string[]): unknown {
+export function readJson<T>(
+  path: string,
+  text: string,
+  fields: string[],
+  read: (json: unknown) => T,
+): T {
   try {
-    return parseBig(text, fields);
+    return read(parseBig(text, fields));
   } catch (e) {
-    throw new DecdnError("HTTP", "the gateway answered with no JSON", {
-      body: text,
-      cause: e,
-    });
+    if (!(e instanceof SyntaxError) && !(e instanceof TypeError)) throw e;
+    throw new DecdnError(
+      "HTTP",
+      `the gateway's answer to ${path} is not the JSON its contract names: ${e.message}`,
+      { body: text, cause: e },
+    );
   }
 }
+
+/** @internal `value` as a JSON object; `TypeError` naming `what` otherwise. */
+export function record(value: unknown, what: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new TypeError(`${what} is not an object`);
+  return value as Record<string, unknown>;
+}
+
+/** @internal The string `o[key]`; `TypeError` otherwise. */
+export function str(o: Record<string, unknown>, key: string): string {
+  const value = o[key];
+  if (typeof value !== "string") throw new TypeError(`${key} is not a string`);
+  return value;
+}
+
+/** @internal The integer `o[key]`, one of `readJson`'s `fields`; `TypeError` otherwise. */
+export function big(o: Record<string, unknown>, key: string): bigint {
+  const value = o[key];
+  if (typeof value !== "bigint")
+    throw new TypeError(`${key} is not an integer`);
+  return value;
+}
+
+/** @internal The boolean `o[key]`; `TypeError` otherwise. */
+export function bool(o: Record<string, unknown>, key: string): boolean {
+  const value = o[key];
+  if (typeof value !== "boolean")
+    throw new TypeError(`${key} is not a boolean`);
+  return value;
+}
+
+/** @internal The integer list `o[key]`, one of `readJson`'s `fields`, or `undefined` when absent; `TypeError` otherwise. */
+export function bigs(
+  o: Record<string, unknown>,
+  key: string,
+): bigint[] | undefined {
+  const value = o[key];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((v) => typeof v === "bigint"))
+    throw new TypeError(`${key} is not a list of integers`);
+  return value as bigint[];
+}
+
+/**
+ * Marks a number `parseBig` quoted, so a string the gateway wrote stays a
+ * string: `\u0000` in the JSON text, a NUL in the parsed value.
+ */
+const BIG = "\u0000big:";
+const BIG_JSON = "\\u0000big:";
 
 function parseBig(text: string, fields: string[]): unknown {
   const names = fields.join("|");
   const quoted = text.replace(
     new RegExp(`("(?:${names})"\\s*:\\s*)(\\d+|\\[[\\d\\s,]*\\])`, "g"),
     (_match, head: string, value: string) =>
-      `${head}${value.replace(/\d+/g, '"$&"')}`,
+      `${head}${value.replace(/\d+/g, `"${BIG_JSON}$&"`)}`,
   );
-  const big = (value: unknown) =>
-    typeof value === "string" && /^\d+$/.test(value) ? BigInt(value) : value;
+  const toBig = (value: unknown) =>
+    typeof value === "string" && value.startsWith(BIG)
+      ? BigInt(value.slice(BIG.length))
+      : value;
   return JSON.parse(quoted, (key, value: unknown) => {
     if (!fields.includes(key)) return value;
-    return Array.isArray(value) ? value.map(big) : big(value);
+    return Array.isArray(value) ? value.map(toBig) : toBig(value);
   });
 }
