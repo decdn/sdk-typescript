@@ -58,8 +58,15 @@ const U64_MAX = (1n << 64n) - 1n;
 const U256_MAX = (1n << 256n) - 1n;
 const enc = new TextEncoder();
 
-/** @internal `value` as a bigint; `CONFIG` for a number that is not a safe integer. */
+/**
+ * @internal `value` as a bigint; `CONFIG` for anything but a bigint or a safe
+ * integer, so a JavaScript caller's `true`, `"7"` or `null` never becomes an id.
+ */
 export function integer(value: bigint | number, what: string): bigint {
+  if (typeof value !== "bigint" && typeof value !== "number")
+    throw bad(
+      `${what} is an integer below 2^53, or a bigint: got ${typeof value}`,
+    );
   if (typeof value === "number" && !Number.isSafeInteger(value))
     throw bad(`${what} is an integer below 2^53, or a bigint: got ${value}`);
   return BigInt(value);

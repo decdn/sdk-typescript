@@ -230,6 +230,17 @@ describe("pointer.set", () => {
     expect(await set(1.5)).toBe("CONFIG");
     expect(await set(2 ** 53 + 2)).toBe("CONFIG");
     expect(await set(7, 2 ** 53 + 2)).toBe("CONFIG");
+    for (const notNumber of [true, "7", null, undefined, "x"]) {
+      expect(await set(notNumber as unknown as number)).toBe("CONFIG");
+      // An undefined seq is the default one, so it stays out of this list.
+      if (notNumber !== undefined)
+        expect(await set(7, notNumber as unknown as number)).toBe("CONFIG");
+      const bad = { ...domain, chainId: notNumber as unknown as number };
+      expect(code(() => pointerSigningHash(bad, pointer))).toBe("CONFIG");
+      expect(c.namespaceUrl.bind(c, notNumber as unknown as number)).toThrow(
+        DecdnError,
+      );
+    }
     expect(c.namespaceUrl.bind(c, 1.5)).toThrow(DecdnError);
     expect(fake.seen).toHaveLength(0);
   });
