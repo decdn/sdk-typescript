@@ -24,6 +24,23 @@ need_harness() {
     die "decdn at $TARGET has no crates/e2e/tests/gateway_sdk.rs: the contract harness ships from v0.3.0"
 }
 usage() { die "usage: scripts/decdn-contract.sh (--tag vX.Y.Z | --ref REF) [--decdn-dir DIR]"; }
+# Whether release $1 (X.Y.Z[-pre]) shipped after release $2 (X.Y.Z), as
+# `shippedAfter` in test/contract/fixture.ts reads it: a prerelease of $2 is
+# not after it.
+released_after() {
+  local IFS=.
+  local -a a b
+  read -r -a a <<<"${1%%-*}"
+  read -r -a b <<<"$2"
+  local i
+  for i in 0 1 2; do
+    if (( 10#${a[i]:-0} != 10#${b[i]:-0} )); then
+      (( 10#${a[i]:-0} > 10#${b[i]:-0} ))
+      return
+    fi
+  done
+  return 1
+}
 
 TAG=""
 REF=""
@@ -142,7 +159,16 @@ fi
 
 need_harness
 
+# A release at or before v0.3.1 speaks the scoped capability API, which this
+# SDK does not: the loopback suite skips against it (`shippedAfter("0.3.1")`),
+# and its harness fails a skipped test, so its loopback journey stays out.
+FILTER=()
+if [[ -n "$TAG" ]] && ! released_after "$VERSION" 0.3.1; then
+  FILTER=(--filter-expr 'not test(=the_sdk_contract_holds_on_a_loopback_gateway)')
+  echo "==> decdn $TAG has no pending-key capabilities: the loopback journey is left out"
+fi
+
 (cd "$DIR/contracts" && forge build --quiet)
 cd "$DIR"
 DECDN_SDK_DIR="$SDK_DIR" cargo nextest run -p decdn-e2e --features anvil-e2e,sdk-e2e \
-  --test gateway_sdk --test-threads 2 --no-tests=fail
+  --test gateway_sdk --test-threads 2 --no-tests=fail ${FILTER[@]+"${FILTER[@]}"}

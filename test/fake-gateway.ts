@@ -32,10 +32,6 @@ export interface FakeOptions {
   mode: FakeMode;
   /** `host[:port]` of the bare host. Default `decdn.test` (public) or `127.0.0.1:8484` (loopback). */
   host?: string;
-  /** Bytes the public gateway delivers before it answers 402. */
-  allowanceBytes?: number;
-  /** The loopback token. */
-  token?: string;
 }
 
 /** One request the fake answered. */
@@ -127,31 +123,101 @@ function window(
   return [start, end - start + 1];
 }
 
-/** The bytes a pull of `window` pays for: the window widened to whole chunk groups, within `size`. */
-function groupSpan([offset, len]: [number, number], size: number): number {
-  const start = Math.floor(offset / CHUNK_GROUP_BYTES) * CHUNK_GROUP_BYTES;
-  const end = Math.min(
-    Math.ceil((offset + len) / CHUNK_GROUP_BYTES) * CHUNK_GROUP_BYTES,
-    size,
-  );
-  return end - start;
-}
-
 /** The largest API body the gateway reads (64 KiB). */
 const MAX_BODY = 64 * 1024;
-/** The unit a pull pays for: a chunk group (16 KiB). */
-const CHUNK_GROUP_BYTES = 16 * 1024;
-/** What a raw blob's size proof spends of the allowance: one chunk group. */
-const PROOF_BYTES = CHUNK_GROUP_BYTES;
+/** The gateway API's paths, answered on the bare host alone. */
+const API_PATHS = ["/_delegate", "/_capability", "/_status", "/_pointer"];
 
-/** A capability registered for a loopback delegate. */
-interface Registered {
+/**
+ * How long before its expiry a gateway stops paying with a
+ * capability, and refuses to register it: one redeem interval and 120 s.
+ */
+export const EXPIRY_MARGIN_SECS = 420n;
+
+/** A loopback gateway's 402 for content it must pull with no usable capability. */
+export const NO_CAPABILITY =
+  "the gateway holds no capability that can pay: register one with PUT /_capability\n";
+
+/** The `error` of a public gateway's 503 when nothing can pay. */
+const CANNOT_PAY = "the gateway cannot pay right now";
+
+/** A capability the gateway holds. */
+export interface Registered {
+  /** Lowercase `0x` address of the key it was issued to. */
   signer: string;
+  /** Lowercase `0x` + 64 hex. */
   pool: string;
-  scope: string;
-  origin: string | null;
   cap: bigint;
   expiry: bigint;
+  /** The namespaces a namespace-scoped capability pays for; absent when it pays for any content. */
+  namespaces?: bigint[];
+  spent: boolean;
+}
+
+/**
+ * `body` with each JSON number of a `namespaces` list as the string `"#<n>"`,
+ * so a u64 past 2^53 parses exactly and a string id stays distinguishable.
+ */
+function quoteNamespaces(body: string): string {
+  return body.replace(
+    /("namespaces"\s*:\s*\[)([^\]]*)\]/g,
+    (_m, head: string, list: string) =>
+      `${head}${list.replace(/(?<!["\w.])-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?![\w."])/g, '"#$&"')}]`,
+  );
+}
+
+/**
+ * The namespaces of a registration's `scope`: `[]` for `"any"`, the ids of a
+ * well-formed namespace scope (a non-empty list of u64s and a `0x`
+ * 65-byte hex signature), `undefined` for any other. The fake checks the
+ * shape alone; the real gateway also recovers the pool's owner from the
+ * signature.
+ */
+/**
+ * A `PUT /_capability` scope as the gateway parses it: `"any"` (no
+ * namespaces), or u64 namespace ids and the signature as `0x` hex bytes of
+ * any length, which the gateway checks only once it holds the key.
+ */
+function parseScope(
+  scope: unknown,
+): { namespaces: bigint[]; signature?: string } | undefined {
+  if (scope === "any") return { namespaces: [] };
+  if (typeof scope !== "object" || scope === null) return undefined;
+  const { namespaces, signature, ...rest } = scope as Record<string, unknown>;
+  if (Object.keys(rest).length > 0) return undefined;
+  if (
+    typeof signature !== "string" ||
+    !/^0x(?:[0-9a-fA-F]{2})*$/.test(signature)
+  )
+    return undefined;
+  if (!Array.isArray(namespaces)) return undefined;
+  const ids: bigint[] = [];
+  for (const n of namespaces) {
+    if (typeof n !== "string" || !/^#\d+$/.test(n)) return undefined;
+    const id = BigInt(n.slice(1));
+    if (id >= 1n << 64n) return undefined;
+    ids.push(id);
+  }
+  return { namespaces: ids, signature };
+}
+
+/** A capability entry's `"namespaces":[..],` member, or `""` for one that pays for any content. */
+function namespacesJson(r: Registered): string {
+  return r.namespaces === undefined
+    ? ""
+    : `"namespaces":[${r.namespaces.join(",")}],`;
+}
+
+/** Whether `headers` mark a top-level navigation: `navigate` mode, `document` destination. */
+function topLevel(headers: Headers): boolean {
+  return (
+    headers.get("sec-fetch-mode") === "navigate" &&
+    headers.get("sec-fetch-dest") === "document"
+  );
+}
+
+function nowSecs(): bigint {
+  return BigInt(Math.floor(Date.now() / 1000));
 }
 
 /** The EIP-55 spelling of a lowercase `0x` address, as the gateway writes addresses. */
@@ -170,11 +236,10 @@ export class FakeGateway {
   readonly mode: FakeMode;
   /** `host[:port]` of the bare host; settable so a listener can name the port it got. */
   host: string;
-  readonly token: string;
   readonly blobs = new Map<string, Uint8Array>();
   /** The raw blobs whose size a proof here proved. */
   private readonly proven = new Set<string>();
-  /** Hashes whose pull the pool cannot pay: 503. */
+  /** Hashes whose pull nothing can pay: 503. */
   readonly unfunded = new Set<string>();
   /** Hashes served with one byte flipped. */
   readonly tampered = new Set<string>();
@@ -184,27 +249,43 @@ export class FakeGateway {
   readonly partial = new Set<string>();
   /** Hashes only the nodes of one namespace hold: found with that `?ns=` hint alone. */
   readonly namespaced = new Map<string, bigint>();
-  /** Loopback capability scopes registered: `example.com`, `*.example.com`, `*`. */
-  readonly scopes: string[] = [];
   /** Namespace pointers: namespace id → bundle hash. */
   readonly pointers = new Map<bigint, string>();
   readonly seen: Seen[] = [];
-  /** Loopback delegates by lowercase address, with the capability registered for each. */
-  readonly delegates = new Map<string, Registered | undefined>();
+  /** The gateway's one pending delegate key, lowercase: no capability has claimed it. */
+  pending?: string;
+  /** Delegate keys a capability has claimed, lowercase. */
+  readonly keys = new Set<string>();
+  /** Capabilities in registration order, as `GET /_capability` lists them. */
+  readonly capabilities: Registered[] = [];
+  /** Pools (lowercase) whose pulls stop for funding: a capability on one is spent when it next pays. */
+  readonly drained = new Set<string>();
+  /** The capability that paid each pull, in order. */
+  readonly paid: Registered[] = [];
+  /** Raw blobs the gateway's pulls delivered whole: its cache serves them with nothing that pays. */
+  readonly cached = new Set<string>();
   /** The deployment pointers are verified on (public). */
   pointerDomain?: PointerDomain;
   /** Namespace owners on that deployment, lowercase. */
   readonly owners = new Map<bigint, string>();
   /** The highest stored `seq` per namespace and signer. */
   private readonly highWater = new Map<string, bigint>();
-  allowance: number;
 
   constructor(opts: FakeOptions) {
     this.mode = opts.mode;
     this.host =
       opts.host ?? (opts.mode === "public" ? "decdn.test" : "127.0.0.1:8484");
-    this.token = opts.token ?? "ab".repeat(32);
-    this.allowance = opts.allowanceBytes ?? Number.MAX_SAFE_INTEGER;
+  }
+
+  /** Hold a capability that pays every request, as a registration through the API leaves one. */
+  fund(): void {
+    this.capabilities.push({
+      signer: "0x00000000000000000000000000000000000000a1",
+      pool: `0x${"11".repeat(32)}`,
+      cap: 10_000_000n,
+      expiry: 1_900_000_000n,
+      spent: false,
+    });
   }
 
   /** The bare origin, `http://<host>`. */
@@ -381,6 +462,10 @@ export class FakeGateway {
       }
     }
     if (site === undefined && !bare) return text(403, "unknown Host\n");
+    if (this.mode === "loopback") {
+      const refused = this.gate(req);
+      if (refused !== undefined) return refused;
+    }
     if (this.mode === "public" && req.method === "OPTIONS")
       return this.preflight(url.pathname, site === undefined);
     if (site !== undefined) return this.site(req, url, site);
@@ -388,14 +473,16 @@ export class FakeGateway {
   }
 
   private preflight(path: string, bare: boolean): Response {
-    const api =
-      path === "/_delegate" || path === "/_capability" || path === "/_pointer";
-    if (api && !bare)
+    if (API_PATHS.includes(path) && !bare)
       return text(404, "the gateway API answers on the gateway origin only\n");
-    if (path === "/_delegate" || path === "/_capability")
-      return text(404, "a public gateway has no API\n");
     const [methods, headers] =
-      path === "/_pointer" ? ["PUT", "content-type"] : ["GET, HEAD", "range"];
+      path === "/_pointer"
+        ? ["PUT", "content-type"]
+        : path === "/_capability"
+          ? ["GET, PUT", "content-type"]
+          : path === "/_delegate" || path === "/_status"
+            ? ["GET", "content-type"]
+            : ["GET, HEAD", "range"];
     return text(204, "", {
       "access-control-allow-methods": methods,
       "access-control-allow-headers": headers,
@@ -403,31 +490,94 @@ export class FakeGateway {
     });
   }
 
-  private authorized(req: Request): boolean {
-    return req.headers.get("x-decdn-token") === this.token;
+  /** Whether `origin` is one of a loopback gateway's own: its bare host or a site origin. */
+  private ownOrigin(origin: string): boolean {
+    let host: string;
+    try {
+      const u = new URL(origin);
+      if (u.protocol !== "http:") return false;
+      host = u.host;
+    } catch {
+      return false;
+    }
+    if (host === this.host || host === this.suffix) return true;
+    if (!host.endsWith(`.${this.suffix}`)) return false;
+    const labels = host.slice(0, -this.suffix.length - 1).split(".");
+    const [first = "", second] = labels;
+    if (labels.length === 1) return base32ToHash(first) !== undefined;
+    return (
+      labels.length === 2 &&
+      /^[1-9][0-9]*$/.test(first) &&
+      base32ToHash(second ?? "") !== undefined
+    );
   }
 
-  private covers(host: string): boolean {
-    const name = host.split(":")[0] ?? host;
-    return this.scopes.some(
-      (s) =>
-        s === "*" ||
-        s === name ||
-        (s.startsWith("*.") &&
-          (name === s.slice(2) || name.endsWith(s.slice(1)))),
+  /**
+   * A loopback gateway's browser-header gate on every request, in order: a
+   * top-level `GET` navigation passes, from any page; then a cross-site
+   * request, an `Origin` that is not one of the gateway's own, and a request
+   * that looks like a browser (an `Origin`, or a `Mozilla/` user agent) with
+   * no `Sec-Fetch-Site` are refused; anything else, such as a client outside
+   * a browser, passes.
+   */
+  private gate(req: Request): Response | undefined {
+    if (req.method === "GET" && topLevel(req.headers)) return undefined;
+    const fetchSite = req.headers.get("sec-fetch-site");
+    if (fetchSite === "cross-site")
+      return text(403, "a page on another site may not use the gateway\n");
+    const origin = req.headers.get("origin");
+    if (origin !== null && !this.ownOrigin(origin))
+      return text(403, "a page on another origin may not use the gateway\n");
+    if (
+      fetchSite === null &&
+      (origin !== null ||
+        (req.headers.get("user-agent") ?? "").startsWith("Mozilla/"))
+    ) {
+      return text(
+        403,
+        "a browser that sends no Sec-Fetch-Site may not use the gateway\n",
+      );
+    }
+    return undefined;
+  }
+
+  /**
+   * The capability that pays a pull selected by `namespace`: among the held
+   * ones that are not spent and not inside the expiry margin, the earliest
+   * registered scoped to `namespace`, else the earliest registered for any
+   * content. A pull that stops for funding on one retires it, and the next
+   * takes the request.
+   */
+  private payer(namespace: bigint | undefined): Registered | undefined {
+    const horizon = nowSecs() + EXPIRY_MARGIN_SECS;
+    const usable = this.capabilities.filter(
+      (r) => !r.spent && r.expiry > horizon,
     );
+    const scoped = usable.filter(
+      (r) => namespace !== undefined && r.namespaces?.includes(namespace),
+    );
+    const any = usable.filter((r) => r.namespaces === undefined);
+    for (const r of [...scoped, ...any]) {
+      if (this.drained.has(r.pool)) {
+        r.spent = true;
+        continue;
+      }
+      this.paid.push(r);
+      return r;
+    }
+    return undefined;
   }
 
   private async bare(req: Request, url: URL): Promise<Response> {
     const path = url.pathname;
     const api = await this.api(req, path);
     if (api !== undefined) return api;
-    if (this.mode === "public") {
-      if (path === "/_delegate" || path === "/_capability")
-        return text(404, "a public gateway has no API\n");
-      if (req.method === "HEAD" && (path === "/" || path === "/favicon.ico"))
-        return text(200, "");
-    }
+    if (
+      this.mode === "public" &&
+      req.method === "HEAD" &&
+      (path === "/" || path === "/favicon.ico")
+    )
+      return text(200, "");
     if (req.method === "GET" && path === "/") {
       return new Response("<h1>decdn gateway</h1>", {
         headers: { "content-type": "text/html; charset=utf-8" },
@@ -443,151 +593,138 @@ export class FakeGateway {
     } catch (e) {
       return text(400, `${(e as Error).message}\n`);
     }
-    if (this.mode === "public" || !this.authorized(req)) {
-      if (uri.kind !== "blob") {
-        return new Response(null, {
-          status: 302,
-          headers: { location: this.siteLocation(uri) },
-        });
-      }
-      if (this.mode === "loopback") return text(401, "token required\n");
-      if (req.method === "HEAD") return this.headBlob(uri);
-      return this.serve(uri, "bare", req.headers.get("range"));
+    // A public gateway sends every bundle and entry to its site; a loopback
+    // one sends a browser's navigation there and serves anything else here.
+    const toSite =
+      uri.kind !== "blob" &&
+      (this.mode === "public" ||
+        req.headers.get("sec-fetch-mode") === "navigate");
+    if (toSite) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: this.siteLocation(uri) },
+      });
     }
-    const pageHost = req.headers.get("x-decdn-host");
-    if (pageHost === null) return text(401, "page host required\n");
-    if (!this.covers(pageHost.toLowerCase()))
-      return text(402, `no capability covers ${pageHost.toLowerCase()}\n`);
+    if (req.method === "HEAD") return this.headBlob(uri);
     return this.serve(uri, "bare", req.headers.get("range"));
   }
 
-  /** The gateway API on the bare host, or `undefined` for a content path. */
+  /** The capabilities the gateway holds, unexpired, as `GET /_capability` lists them. */
+  private listed(): string {
+    const now = nowSecs();
+    return `[${this.capabilities
+      .filter((r) => r.expiry > now)
+      .map(
+        (r) =>
+          `{"cap":${r.cap},"expiry":${r.expiry},${namespacesJson(r)}"pool":"${r.pool}","signer":"${checksum(r.signer)}","spent":${r.spent}}`,
+      )
+      .join(",")}]`;
+  }
+
+  /**
+   * The gateway API on the bare host, or `undefined` for a content path. A
+   * loopback gateway answers no cross-origin request; a public one answers
+   * every origin.
+   */
   private async api(req: Request, path: string): Promise<Response | undefined> {
     const method = req.method;
-    if (this.mode === "public") {
-      if (path === "/_pointer" && method === "PUT") return this.putPointer(req);
-      return undefined;
+    if (this.mode === "loopback" && method === "OPTIONS")
+      return text(403, "no cross-origin access\n");
+    if (path === "/_status" && method === "GET") {
+      return new Response(`{"capabilities":${this.listed()}}`, {
+        headers: { "content-type": "application/json" },
+      });
     }
-    const origin = req.headers.get("origin");
-    const cors = (r: Response): Response => {
-      if (origin !== null) {
-        r.headers.set("access-control-allow-origin", origin);
-        r.headers.set("vary", "Origin");
-      }
-      return r;
-    };
-    if (method === "OPTIONS") {
-      if (path !== "/_delegate" && path !== "/_capability")
-        return text(403, "no cross-origin access\n");
-      if (origin === null) return text(403, "no Origin\n");
-      return cors(
-        text(204, "", {
-          "access-control-allow-methods": "GET, PUT",
-          "access-control-allow-headers": "content-type",
-          "access-control-max-age": "600",
-          "access-control-allow-private-network": "true",
-        }),
-      );
-    }
-    const page =
-      origin !== null && origin !== "null"
-        ? new URL(origin).hostname
-        : undefined;
-    const authorized = this.authorized(req);
     if (path === "/_delegate" && method === "GET") {
-      if (!authorized && page === undefined)
-        return cors(text(403, "the token or a page origin is required\n"));
-      const address = `0x${Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
-      this.delegates.set(address, undefined);
-      return cors(json(200, { address: checksum(address) }));
+      if (this.pending === undefined) {
+        this.pending = `0x${Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      }
+      return json(200, { address: checksum(this.pending) });
     }
-    if (path === "/_capability" && method === "PUT") {
-      if (!authorized && page === undefined)
-        return cors(text(403, "the token or a page origin is required\n"));
-      return cors(
-        await this.register(req, authorized ? undefined : page, origin),
-      );
-    }
+    if (path === "/_capability" && method === "PUT") return this.register(req);
     if (path === "/_capability" && method === "GET") {
-      if (!authorized) return text(401, "token required\n");
-      const list = [...this.delegates.entries()].flatMap(([, r]) =>
-        r === undefined ? [] : [r],
-      );
-      return new Response(
-        `[${list
-          .map(
-            (r) =>
-              `{"signer":"${checksum(r.signer)}","pool":"${r.pool}","scope":"${r.scope}","origin":${r.origin === null ? "null" : JSON.stringify(r.origin)},"cap":${r.cap},"expiry":${r.expiry},"spent":false}`,
-          )
-          .join(",")}]`,
-        { headers: { "content-type": "application/json" } },
-      );
+      return new Response(this.listed(), {
+        headers: { "content-type": "application/json" },
+      });
     }
-    if (path === "/_pointer" && method === "PUT")
-      return text(404, "a loopback gateway holds no namespace pointers\n");
+    if (path === "/_pointer" && method === "PUT") {
+      return this.mode === "public"
+        ? this.putPointer(req)
+        : text(404, "a loopback gateway holds no namespace pointers\n");
+    }
     return undefined;
   }
 
-  private async register(
-    req: Request,
-    page: string | undefined,
-    origin: string | null,
-  ): Promise<Response> {
+  private async register(req: Request): Promise<Response> {
     const body = await req.text();
     if (body.length > MAX_BODY) return text(413, "body too large\n");
-    let request: { capability?: unknown; scope?: unknown };
+    let request: unknown;
     try {
-      request = JSON.parse(body) as typeof request;
+      request = JSON.parse(quoteNamespaces(body));
     } catch (e) {
       return text(
         422,
         `expected {"capability", "scope"}: ${(e as Error).message}\n`,
       );
     }
+    if (typeof request !== "object" || request === null)
+      return text(422, 'expected {"capability", "scope"}\n');
+    const fields = request as Record<string, unknown>;
+    const capability = fields.capability;
     if (
-      typeof request.capability !== "string" ||
-      typeof request.scope !== "string"
+      Object.keys(fields).some((k) => k !== "capability" && k !== "scope") ||
+      typeof capability !== "string" ||
+      !("scope" in fields)
     ) {
       return text(422, 'expected {"capability", "scope"}\n');
     }
-    const scope = request.scope;
-    if (!/^(\*|(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*)$/.test(scope))
-      return text(422, `invalid scope ${scope}\n`);
-    if (page !== undefined && scope !== page && scope !== `*.${page}`) {
-      return text(403, `a page registers only a scope that covers itself\n`);
+    const scope = parseScope(fields.scope);
+    if (scope === undefined) {
+      return text(
+        422,
+        'a scope is "any" or {"namespaces": [<id>, ...], "signature": "0x<65-byte hex>"}\n',
+      );
     }
+    const { namespaces, signature } = scope;
+    if (signature !== undefined && namespaces.length === 0)
+      return text(422, "a scope names at least one namespace\n");
     let grant;
     try {
-      grant = parseCapability(request.capability.trim());
+      grant = parseCapability(capability.trim());
     } catch (e) {
       return text(422, `${(e as Error).message}\n`);
     }
-    if (grant.expiry <= BigInt(Math.floor(Date.now() / 1000)))
-      return text(422, "the capability has expired\n");
+    if (grant.spendingCap === 0n)
+      return text(422, "the capability's spending cap is 0\n");
+    if (grant.expiry <= nowSecs() + EXPIRY_MARGIN_SECS)
+      return text(422, "the capability expires too soon to pay\n");
     const signer = grant.signer.toLowerCase();
-    if (!this.delegates.has(signer)) {
+    const pool = grant.poolId.toLowerCase();
+    if (signer !== this.pending && !this.keys.has(signer)) {
       return text(
         409,
-        "the capability names no delegate this gateway is holding: get one from GET /_delegate\n",
+        "the capability names no key this gateway holds: get one from GET /_delegate\n",
       );
     }
-    if (this.delegates.get(signer) !== undefined) {
-      return text(
-        409,
-        "that delegate already holds a capability: get a new one from GET /_delegate\n",
-      );
+    if (this.capabilities.some((r) => r.signer === signer && r.pool === pool)) {
+      return text(409, "that key already holds a capability from this pool\n");
     }
-    this.delegates.set(signer, {
+    // The owner check reads the scope signature after the key checks.
+    if (signature !== undefined && signature.length !== 2 + 65 * 2)
+      return text(422, "the scope signature is malformed\n");
+    if (signer === this.pending) delete this.pending;
+    this.keys.add(signer);
+    const registered: Registered = {
       signer,
-      pool: grant.poolId,
-      scope,
-      origin: page === undefined ? null : origin,
+      pool,
       cap: grant.spendingCap,
       expiry: grant.expiry,
-    });
-    this.scopes.push(scope);
+      spent: false,
+    };
+    if (namespaces.length > 0) registered.namespaces = namespaces;
+    this.capabilities.push(registered);
     return new Response(
-      `{"signer":"${checksum(signer)}","scope":"${scope}","expiry":${grant.expiry}}`,
+      `{"expiry":${grant.expiry},${namespacesJson(registered)}"pool":"${pool}","signer":"${checksum(signer)}"}`,
       {
         status: 201,
         headers: { "content-type": "application/json" },
@@ -672,27 +809,29 @@ export class FakeGateway {
     site: { hash: string; namespace?: bigint; pointer?: bigint },
   ): Promise<Response> {
     const path = url.pathname;
-    if (
-      path === "/_delegate" ||
-      path === "/_capability" ||
-      path === "/_pointer"
-    ) {
+    if (API_PATHS.includes(path))
       return text(404, "the gateway API answers on the gateway origin only\n");
-    }
     if (req.method === "HEAD" && this.mode === "loopback")
       return text(405, "", { allow: "GET" });
     if (req.method !== "GET" && req.method !== "HEAD")
       return text(405, "method not allowed\n");
-    if (this.mode === "loopback" && !this.authorized(req)) {
-      const fetchSite = req.headers.get("sec-fetch-site");
-      if (fetchSite === null)
-        return text(401, "token required outside a browser\n");
-      if (fetchSite !== "same-origin" && fetchSite !== "none") {
-        return text(
-          403,
-          "a site answers only its own pages and top-level navigation\n",
-        );
-      }
+    // A loopback site spends only for its own pages, the user, and a
+    // top-level navigation (no Sec-Fetch-Mode, or navigate, to a document).
+    const fetchSite = req.headers.get("sec-fetch-site");
+    if (
+      this.mode === "loopback" &&
+      fetchSite !== null &&
+      fetchSite !== "same-origin" &&
+      fetchSite !== "none" &&
+      !(
+        (req.headers.get("sec-fetch-mode") ?? "navigate") === "navigate" &&
+        req.headers.get("sec-fetch-dest") === "document"
+      )
+    ) {
+      return text(
+        403,
+        "a site answers only its own pages and top-level navigation\n",
+      );
     }
     const csp = {
       "content-security-policy":
@@ -714,6 +853,8 @@ export class FakeGateway {
       } catch (e) {
         return text(400, `${(e as Error).message}\n`);
       }
+      // A pointer's namespace pays for the pointer's own bundle alone.
+      const pointer = uri.hash === site.hash ? site.pointer : undefined;
       const navigation =
         (req.headers.get("sec-fetch-mode") ?? "navigate") === "navigate";
       if (uri.kind !== "blob" && (req.method === "HEAD" || navigation)) {
@@ -725,13 +866,14 @@ export class FakeGateway {
           headers: { location: this.siteLocation(uri, directory) },
         });
       } else if (req.method === "HEAD") {
-        response = this.headBlob(uri);
+        response = this.headBlob(uri, pointer);
       } else {
         response = await this.serve(
           uri,
           "site",
           req.headers.get("range"),
           url.search,
+          pointer,
         );
       }
     } else {
@@ -747,7 +889,13 @@ export class FakeGateway {
       response =
         req.method === "HEAD"
           ? this.headSite(uri, url.search)
-          : await this.serve(uri, "site", req.headers.get("range"), url.search);
+          : await this.serve(
+              uri,
+              "site",
+              req.headers.get("range"),
+              url.search,
+              site.pointer,
+            );
     }
     for (const [k, v] of Object.entries(csp)) response.headers.set(k, v);
     return response;
@@ -812,34 +960,42 @@ export class FakeGateway {
     return new Response(null, { headers });
   }
 
-  private refusal(
-    status: 402 | 503,
-    uri: DecdnUri,
-    retryAfter: number,
-    why: string,
-  ): Response {
+  /** The 503 for a pull nothing can pay, with the URI to fetch with a paying client. */
+  private cannotPay(uri: DecdnUri): Response {
     const canonical = formatUri(uri);
     return json(
-      status,
-      { error: why, uri: canonical, retry_after_secs: retryAfter },
-      {
-        "retry-after": String(retryAfter),
-        link: `<${canonical}>; rel="alternate"`,
-      },
+      503,
+      { error: CANNOT_PAY, retry_after_secs: 60, uri: canonical },
+      { "retry-after": "60", link: `<${canonical}>; rel="alternate"` },
     );
   }
 
-  private secondsToMidnight(): number {
-    const now = Date.now() / 1000;
-    return Math.ceil(86400 - (now % 86400));
+  /**
+   * Pay for a pull of `uri`: `undefined` once a capability pays, else the
+   * refusal (503 on a public gateway, the plain-text 402 on a loopback one).
+   * On a public gateway, `pointer`, the namespace whose pointer serves the
+   * request, selects a scoped capability; on a loopback one, the namespace
+   * `uri` names does.
+   */
+  private pay(
+    uri: DecdnUri,
+    hash: string,
+    pointer: bigint | undefined,
+  ): Response | undefined {
+    if (this.unfunded.has(hash)) return this.cannotPay(uri);
+    const namespace = this.mode === "public" ? pointer : uri.namespace;
+    if (this.payer(namespace) !== undefined) return undefined;
+    return this.mode === "public"
+      ? this.cannotPay(uri)
+      : text(402, NO_CAPABILITY);
   }
 
   /**
    * `HEAD` of a raw blob on a public gateway: free for a blob whose size is
    * proven, else refused or failed as its `GET` would be before it pays for
-   * the size proof.
+   * the size proof, which `pointer` selects a capability for as `pay` reads it.
    */
-  private headBlob(uri: DecdnUri): Response {
+  private headBlob(uri: DecdnUri, pointer?: bigint): Response {
     const headers: Record<string, string> = {
       "content-type": "application/octet-stream",
       etag: `"${uri.hash}"`,
@@ -848,23 +1004,10 @@ export class FakeGateway {
     const bytes = this.blob(uri.hash, uri.namespace);
     // The empty root is empty, with no proof.
     if (!this.proven.has(uri.hash) && bytes?.length !== 0) {
-      if (this.allowance <= 0) {
-        return this.refusal(
-          402,
-          uri,
-          this.secondsToMidnight(),
-          "the gateway's allowance is spent for today",
-        );
-      }
-      if (this.unfunded.has(uri.hash))
-        return this.refusal(
-          503,
-          uri,
-          60,
-          "the gateway's pool cannot pay right now",
-        );
+      const refused = this.pay(uri, uri.hash, pointer);
+      if (refused !== undefined) return refused;
       if (bytes === undefined) return text(404, "not found\n");
-      this.prove(uri.hash, bytes.length);
+      this.proven.add(uri.hash);
     }
     if (bytes !== undefined) {
       headers["content-length"] = String(bytes.length);
@@ -873,50 +1016,39 @@ export class FakeGateway {
     return new Response(null, { headers });
   }
 
-  /** Pay for the size proof of the raw blob `hash` of `size` bytes, once; the empty root needs none. */
-  private prove(hash: string, size: number): void {
-    if (this.proven.has(hash)) return;
-    if (size > 0) this.charge(PROOF_BYTES);
-    this.proven.add(hash);
-  }
-
   private async serve(
     uri: DecdnUri,
     present: "bare" | "site",
     range: string | null,
     query = "",
+    pointer?: bigint,
   ): Promise<Response> {
-    if (this.mode === "public" && this.allowance <= 0) {
-      return this.refusal(
-        402,
-        uri,
-        this.secondsToMidnight(),
-        "the gateway's allowance is spent for today",
-      );
+    // A raw blob the cache holds whole, and the empty root, need nothing that
+    // pays; every other answer is a paid pull.
+    const free =
+      uri.kind === "blob" &&
+      (this.cached.has(uri.hash) ||
+        this.blob(uri.hash, uri.namespace)?.length === 0);
+    if (!free) {
+      const refused = this.pay(uri, uri.hash, pointer);
+      if (refused !== undefined) return refused;
     }
-    if (this.unfunded.has(uri.hash))
-      return this.refusal(
-        503,
-        uri,
-        60,
-        "the gateway's pool cannot pay right now",
-      );
     if (uri.kind === "blob") {
-      // The gateway proves a raw blob's size before it answers (one chunk
-      // group of the allowance, once), so a raw blob answers as a sized
-      // entry does.
+      // The gateway proves a raw blob's size before it answers, so a raw
+      // blob answers as a sized entry does.
       const bytes = this.blob(uri.hash, uri.namespace);
       if (bytes === undefined) return text(404, "not found\n");
-      this.prove(uri.hash, bytes.length);
-      return this.sized(uri, uri.hash, bytes, bytes.length, range, {
+      this.proven.add(uri.hash);
+      const response = this.sized(uri.hash, bytes, bytes.length, range, {
         "content-type": "application/octet-stream",
         "content-disposition": `inline; filename="${uri.hash}"`,
         "x-content-type-options": "nosniff",
       });
+      if (response.status === 200) this.cached.add(uri.hash);
+      return response;
     }
     const manifest = this.manifestOf(uri.hash, uri.namespace);
     if (manifest instanceof Response) return manifest;
-    this.charge(this.blobs.get(uri.hash)?.length ?? 0);
     if (uri.kind === "bundle") {
       if (
         present === "site" &&
@@ -954,13 +1086,7 @@ export class FakeGateway {
         ? this.directory(uri, manifest, path, query)
         : text(404, `no entry ${path} in bundle\n`);
     }
-    if (this.unfunded.has(entry.hash))
-      return this.refusal(
-        503,
-        uri,
-        60,
-        "the gateway's pool cannot pay right now",
-      );
+    if (this.unfunded.has(entry.hash)) return this.cannotPay(uri);
     const bytes = this.blob(entry.hash, uri.namespace);
     if (bytes === undefined) return text(502, "the upstream pull failed\n");
     const name = path.split("/").pop() ?? path;
@@ -978,18 +1104,14 @@ export class FakeGateway {
     }
     if (entry.size === undefined)
       return this.body(entry.hash, bytes, 200, headers);
-    return this.sized(uri, entry.hash, bytes, entry.size, range, headers);
+    return this.sized(entry.hash, bytes, entry.size, range, headers);
   }
 
   /**
    * The answer for `bytes` of known `size`: one `range` as 206, or 416 past
-   * the end; else whole with its length. On a public gateway it is refused
-   * with 402 when what it pays for (the whole, or the window widened to
-   * chunk groups) does not fit what is left of the allowance, and it is
-   * charged that.
+   * the end; else whole with its length.
    */
   private sized(
-    uri: DecdnUri,
     hash: string,
     bytes: Uint8Array,
     size: number,
@@ -1002,17 +1124,6 @@ export class FakeGateway {
       return text(416, "range not satisfiable\n", {
         "content-range": `bytes */${size}`,
       });
-    const billable = w === undefined ? size : groupSpan(w, size);
-    if (this.mode === "public" && billable > this.allowance) {
-      return this.refusal(
-        402,
-        uri,
-        0,
-        "the response does not fit what is left of the gateway's allowance today",
-      );
-    }
-    // The pull pays for the aligned span; the body charges the window.
-    if (w !== undefined) this.charge(billable - w[1]);
     if (w === undefined) {
       headers["content-length"] = String(size);
       return this.body(hash, bytes, 200, headers);
@@ -1023,10 +1134,6 @@ export class FakeGateway {
     return this.body(hash, bytes.subarray(offset, offset + len), 206, headers);
   }
 
-  private charge(n: number): void {
-    if (this.mode === "public") this.allowance -= n;
-  }
-
   /** A streamed body of `bytes`, in two chunks, honouring the fault sets for `hash`. */
   private body(
     hash: string,
@@ -1034,7 +1141,6 @@ export class FakeGateway {
     status: number,
     headers: Record<string, string>,
   ): Response {
-    this.charge(bytes.length);
     if (this.partial.has(hash) && status === 200 && bytes.length > 1) {
       return new Response(bytes.slice(0, 1) as Uint8Array<ArrayBuffer>, {
         status: 206,

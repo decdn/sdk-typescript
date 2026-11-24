@@ -80,6 +80,7 @@ describe("pointer EIP-712", () => {
 describe("pointer.set", () => {
   function gateway() {
     const fake = new FakeGateway({ mode: "public" });
+    fake.fund();
     fake.pointerDomain = domain;
     fake.owners.set(pointer.namespace, fixture.address.toLowerCase());
     return fake;
@@ -116,6 +117,39 @@ describe("pointer.set", () => {
     expect(
       await (await fetchVia(fake, "http://7.decdn.test/index.html")).text(),
     ).toBe("<p>hi</p>");
+  });
+
+  it("reports an answer outside the contract as HTTP, with the body", async () => {
+    const good = {
+      namespace: 7,
+      root: "ab".repeat(32),
+      seq: 5,
+      url: "http://7.decdn.test/",
+    };
+    for (const body of [
+      "<h1>another server</h1>",
+      JSON.stringify({ ...good, url: undefined }),
+      JSON.stringify({ ...good, seq: "5" }),
+    ]) {
+      const c = await DecdnClient.open({
+        gatewayUrl: "http://decdn.test",
+        pointer: domain,
+        fetch: () => Promise.resolve(new Response(body)),
+      });
+      const set = c.pointer.set({
+        namespace: 7n,
+        root: good.root,
+        seq: 5n,
+        signer: { privateKey: fixture.privateKey },
+      });
+      await expect(set).rejects.toMatchObject({
+        code: "HTTP",
+        body,
+        message: expect.stringMatching(
+          /^the gateway's answer to \/_pointer is not the JSON its contract names: /,
+        ),
+      });
+    }
   });
 
   it("maps a replayed seq to CONFLICT with the held seq", async () => {
@@ -196,6 +230,17 @@ describe("pointer.set", () => {
     expect(await set(1.5)).toBe("CONFIG");
     expect(await set(2 ** 53 + 2)).toBe("CONFIG");
     expect(await set(7, 2 ** 53 + 2)).toBe("CONFIG");
+    for (const notNumber of [true, "7", null, undefined, "x"]) {
+      expect(await set(notNumber as unknown as number)).toBe("CONFIG");
+      // An undefined seq is the default one, so it stays out of this list.
+      if (notNumber !== undefined)
+        expect(await set(7, notNumber as unknown as number)).toBe("CONFIG");
+      const bad = { ...domain, chainId: notNumber as unknown as number };
+      expect(code(() => pointerSigningHash(bad, pointer))).toBe("CONFIG");
+      expect(c.namespaceUrl.bind(c, notNumber as unknown as number)).toThrow(
+        DecdnError,
+      );
+    }
     expect(c.namespaceUrl.bind(c, 1.5)).toThrow(DecdnError);
     expect(fake.seen).toHaveLength(0);
   });

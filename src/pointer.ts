@@ -13,7 +13,7 @@ import type { DecdnClient } from "./client.js";
 import { DecdnError } from "./errors.js";
 import { fromHex, isHash, toHex } from "./hex.js";
 import { concat } from "./bytes.js";
-import { parseWithBigInts, sendOk } from "./http.js";
+import { big, readJson, record, sendOk, str } from "./http.js";
 import { parseUri, SCHEME } from "./uri.js";
 
 /** The chain a pointer is signed for: the EIP-712 domain of `PUT /_pointer`. */
@@ -58,11 +58,26 @@ const U64_MAX = (1n << 64n) - 1n;
 const U256_MAX = (1n << 256n) - 1n;
 const enc = new TextEncoder();
 
-/** @internal `value` as a bigint; `CONFIG` for a number that is not a safe integer. */
+/**
+ * @internal `value` as a bigint; `CONFIG` for anything but a bigint or a safe
+ * integer, so a JavaScript caller's `true`, `"7"` or `null` never becomes an id.
+ */
 export function integer(value: bigint | number, what: string): bigint {
+  if (typeof value !== "bigint" && typeof value !== "number")
+    throw bad(
+      `${what} is an integer below 2^53, or a bigint: got ${typeof value}`,
+    );
   if (typeof value === "number" && !Number.isSafeInteger(value))
     throw bad(`${what} is an integer below 2^53, or a bigint: got ${value}`);
   return BigInt(value);
+}
+
+/** @internal `value` as a namespace id: `CONFIG` unless it is a u64 of at least 1. */
+export function namespaceId(value: bigint | number): bigint {
+  const id = integer(value, "a namespace id");
+  if (id < 1n || id > U64_MAX)
+    throw bad("a namespace id is a u64 of at least 1");
+  return id;
 }
 
 /** The domain's chain id: an integer of at least 1 that fits a uint256. */
@@ -103,8 +118,7 @@ function address(s: string): Uint8Array {
 }
 
 function checked(p: Pointer): Uint8Array {
-  if (p.namespace < 1n || p.namespace > U64_MAX)
-    throw bad("a namespace id is a u64 of at least 1");
+  namespaceId(p.namespace);
   if (p.seq < 0n || p.seq > U64_MAX) throw bad("a pointer seq is a u64");
   const root = p.root.startsWith("0x") ? p.root.slice(2) : p.root;
   const bytes = isHash(root) ? fromHex(root) : undefined;
@@ -310,9 +324,19 @@ export class PointerApi {
       `${this.client.origin}/_pointer`,
       init,
     );
-    return parseWithBigInts(await response.text(), [
-      "namespace",
-      "seq",
-    ]) as PointerSet;
+    return readJson(
+      "/_pointer",
+      await response.text(),
+      ["namespace", "seq"],
+      (json) => {
+        const o = record(json, "the answer");
+        return {
+          namespace: big(o, "namespace"),
+          root: str(o, "root"),
+          seq: big(o, "seq"),
+          url: str(o, "url"),
+        };
+      },
+    );
   }
 }

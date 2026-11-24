@@ -2,10 +2,11 @@
 // any tool runs, and arguments it takes reach the first tool check. The
 // script runs with a PATH that holds no tool at all.
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { shippedAfter } from "../contract/fixture.js";
 
 const SCRIPT = resolve(import.meta.dirname, "../../scripts/decdn-contract.sh");
 const FIRST_TOOL_CHECK = "git not found on PATH";
@@ -13,6 +14,21 @@ const FIRST_TOOL_CHECK = "git not found on PATH";
 const BASH = execFileSync("sh", ["-c", "command -v bash"], {
   encoding: "utf8",
 }).trim();
+
+/** The script's `released_after`, run alone: whether `release` shipped after `version`. */
+function releasedAfter(release: string, version: string): boolean {
+  const fn = /^released_after\(\) \{\n[\s\S]*?^\}$/m.exec(
+    readFileSync(SCRIPT, "utf8"),
+  )?.[0];
+  expect(fn).toBeDefined();
+  const r = spawnSync(
+    BASH,
+    ["-c", `${fn}\nreleased_after "$1" "$2"`, "bash", release, version],
+    { encoding: "utf8" },
+  );
+  expect(r.status === 0 || r.status === 1, r.stderr).toBe(true);
+  return r.status === 0;
+}
 
 function run(...args: string[]) {
   const home = mkdtempSync(join(tmpdir(), "decdn-contract-"));
@@ -24,6 +40,29 @@ function run(...args: string[]) {
 }
 
 describe("decdn-contract.sh", () => {
+  it.each([
+    ["0.3.0", false],
+    ["0.3.1", false],
+    ["0.3.1-rc.1", false],
+    ["0.3.2-rc.1", true],
+    ["0.3.2", true],
+    ["0.3.10", true],
+    ["0.4.0", true],
+    ["1.0.0", true],
+    ["0.2.9", false],
+  ])(
+    "reads %s as shipped after 0.3.1: %s, as shippedAfter does",
+    (release, after) => {
+      expect(releasedAfter(release, "0.3.1")).toBe(after);
+      vi.stubEnv("DECDN_CONTRACT_RELEASE", release);
+      try {
+        expect(shippedAfter("0.3.1")).toBe(after);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
   it.each([[[]], [["--tag", "v0.3.0", "--ref", "main"]]])(
     "takes exactly one of --tag or --ref (%j)",
     (args) => {

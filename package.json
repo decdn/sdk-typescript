@@ -58,19 +58,6 @@
         "default": "./dist/index.cjs"
       }
     },
-    "./node": {
-      "node": {
-        "import": {
-          "types": "./dist/node.d.ts",
-          "default": "./dist/node.js"
-        },
-        "require": {
-          "types": "./dist/node.d.cts",
-          "default": "./dist/node.cjs"
-        }
-      },
-      "types": "./dist/node.d.ts"
-    },
     "./package.json": "./package.json"
   },
   "scripts": {

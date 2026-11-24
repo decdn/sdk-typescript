@@ -1,10 +1,12 @@
 // The client: one of three contexts over a `decdn gateway`.
 //
 // - `public`: a gateway with `--public-url`; blobs from the bare host, entries
-//   from their site host, every request paid by the operator.
-// - `loopback`: the local gateway with its token; every request on the bare
-//   host, paid by the capability that covers `host`. A page reaches it
-//   without the token, for `/_delegate` and `/_capability` alone.
+//   from their site host, every pull paid by the first capability the
+//   gateway holds that can pay.
+// - `loopback`: the local gateway; content on the bare host, paid by the
+//   first capability the gateway holds that can pay. It serves a client
+//   outside a browser, a top-level navigation from any page, and other page
+//   requests only from its own origins.
 // - `site`: a page served from a site origin; its own entries same-origin and
 //   other content through `/_decdn/`.
 import { base32ToHash, hashToBase32 } from "./base32.js";
@@ -32,10 +34,6 @@ export type VerifyMode = "auto" | boolean;
 export interface OpenOptions {
   /** The gateway's origin: `https://decdn.link`, or `http://127.0.0.1:8484` for a loopback gateway. */
   gatewayUrl?: string;
-  /** The loopback gateway's token (`~/.decdn/gateway/token`). */
-  token?: string;
-  /** The host whose capability pays on a loopback gateway, sent as `x-decdn-host`. Required with `token`. */
-  host?: string;
   /** The chain and registry pointers are signed for. Required by `pointer.set`. */
   pointer?: PointerDomain;
   /** The `fetch` to use. Default: the global one. */
@@ -216,12 +214,19 @@ function siteOf(
   return undefined;
 }
 
+/**
+ * Whether a URL's `hostname` names this machine: `localhost`, an address in
+ * 127.0.0.0/8, or `[::1]`. The URL parser writes IPv4 as a dotted quad and
+ * IPv6 in its shortest form, so `[0:0:0:0:0:0:0:1]` arrives as `[::1]` and
+ * the IPv4-mapped `[::ffff:127.0.0.1]` as `[::ffff:7f00:1]`, which is not
+ * loopback.
+ */
 function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
   return (
-    hostname === "127.0.0.1" ||
-    hostname === "localhost" ||
-    hostname === "[::1]" ||
-    hostname === "::1"
+    host === "localhost" ||
+    host === "[::1]" ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
   );
 }
 
@@ -324,8 +329,6 @@ export class DecdnClient {
   readonly pointerDomain?: PointerDomain;
   private readonly gateway?: URL;
   private readonly site?: SiteOrigin;
-  private readonly token?: string;
-  private readonly host?: string;
   private readonly verify: VerifyMode;
   private readonly cacheSize: number;
   /** Manifest reads by hash and namespace hint, least recently used first. */
@@ -343,8 +346,6 @@ export class DecdnClient {
     this.cacheSize = opts.manifestCacheSize ?? 64;
     if (gateway !== undefined) this.gateway = gateway;
     if (site !== undefined) this.site = site;
-    if (opts.token !== undefined) this.token = opts.token;
-    if (opts.host !== undefined) this.host = opts.host;
     if (opts.pointer !== undefined) this.pointerDomain = opts.pointer;
     this.origin = site?.origin ?? gateway?.origin ?? "";
   }
@@ -352,9 +353,10 @@ export class DecdnClient {
   /**
    * A client for the gateway at `gatewayUrl`, or, in a page served from a
    * site origin (`[<ns>.]<hash32>.<host>`, or `<ns>.<host>` under the
-   * configured gateway), for that site. A loopback `gatewayUrl` opens the
-   * loopback gateway from any page; a page, which cannot send the token,
-   * reaches its delegate and capability API alone.
+   * configured gateway), for that site, whatever `gatewayUrl` names. A
+   * `gatewayUrl` on `localhost` or a loopback address (127.0.0.0/8, `[::1]`)
+   * opens the loopback gateway, which serves its content to a client outside a browser and
+   * refuses a page on another origin.
    */
   static async open(opts: OpenOptions = {}): Promise<DecdnClient> {
     let gateway: URL | undefined;
@@ -369,14 +371,11 @@ export class DecdnClient {
         );
       }
     }
-    const loopback =
-      gateway !== undefined &&
-      (opts.token !== undefined || isLoopbackHost(gateway.hostname));
+    const loopback = gateway !== undefined && isLoopbackHost(gateway.hostname);
     const loc = (
       globalThis as { location?: { protocol?: string; host?: string } }
     ).location;
     if (
-      !loopback &&
       loc?.host !== undefined &&
       loc.host !== "" &&
       loc.protocol !== undefined
@@ -388,21 +387,7 @@ export class DecdnClient {
     if (gateway === undefined) {
       throw config("no gatewayUrl, and the page is not on a site origin");
     }
-    if (
-      opts.token !== undefined &&
-      (opts.host === undefined || opts.host === "")
-    ) {
-      throw config(
-        "a loopback token needs `host`: the host whose capability pays, sent as x-decdn-host",
-      );
-    }
     return new DecdnClient(loopback ? "loopback" : "public", opts, gateway);
-  }
-
-  /** @internal Headers every bare-host request carries. */
-  authHeaders(): Record<string, string> {
-    if (this.token === undefined || this.host === undefined) return {};
-    return { "x-decdn-token": this.token, "x-decdn-host": this.host };
   }
 
   /**
@@ -437,15 +422,6 @@ export class DecdnClient {
     )
       uri.namespace = this.site.namespace;
     return uri;
-  }
-
-  /** Content on a loopback gateway is the token holder's alone. */
-  private needToken(): void {
-    if (this.context === "loopback" && this.token === undefined) {
-      throw config(
-        "content on a loopback gateway needs its token: a page without it reaches /_delegate and /_capability alone",
-      );
-    }
   }
 
   /** The URI on the bare host, or under `/_decdn/` on a site. */
@@ -530,7 +506,6 @@ export class DecdnClient {
     uri: DecdnUri,
     signal?: AbortSignal,
   ): Promise<BundleManifest> {
-    this.needToken();
     // A caller that has already given up starts no read.
     signal?.throwIfAborted();
     const key = formatUri(uri);
@@ -653,11 +628,7 @@ export class DecdnClient {
     headers: Record<string, string>,
     signal?: AbortSignal,
   ): Promise<Response> {
-    const bare = this.site === undefined && url.startsWith(`${this.origin}/`);
-    const init: RequestInit = {
-      method,
-      headers: bare ? { ...this.authHeaders(), ...headers } : headers,
-    };
+    const init: RequestInit = { method, headers };
     if (signal !== undefined) init.signal = signal;
     return sendOk(this.fetch, url, init);
   }
@@ -795,7 +766,6 @@ export class DecdnClient {
     uri: string | DecdnUri,
     opts: GetOptions = {},
   ): Promise<DecdnResponse> {
-    this.needToken();
     const mode = opts.verify ?? this.verify;
     const plan = await this.plan(
       uri,
@@ -892,7 +862,7 @@ export class DecdnClient {
     } catch (e) {
       const retryable =
         e instanceof DecdnError &&
-        ["PAYMENT_REQUIRED", "POOL_UNFUNDED", "RATE_LIMITED"].includes(e.code);
+        ["PAYMENT_REQUIRED", "RATE_LIMITED"].includes(e.code);
       if (!opts.retry || !retryable || e.retryAfterSecs === undefined) throw e;
       await sleep(e.retryAfterSecs * 1000, opts.signal);
       return this.request(url, "GET", headers, opts.signal);
